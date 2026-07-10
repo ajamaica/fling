@@ -1,0 +1,10 @@
+[Unit]
+Description=FLiNG trainer auto-launcher (starts trainers when their game starts)
+
+[Service]
+ExecStart=%h/.local/bin/fling watch
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

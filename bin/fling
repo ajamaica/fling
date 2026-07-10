@@ -1,0 +1,422 @@
+#!/usr/bin/bash
+# fling — manage FLiNG trainers for Steam games on Bazzite/Proton.
+#
+#   fling list                 list installed Steam games (appid + name)
+#   fling auto <name|appid>    get + setup in one shot (restarts Steam once)
+#   fling get <name|appid>     find game, download its FLiNG trainer
+#   fling setup [name|appid]   enable trainer injection globally (env var; alias:
+#                              inject-properties). One-time; no per-game restart.
+#   fling restart-steam        bounce the Steam session to activate setup
+#   fling run <name|appid>     launch the trainer inside the game's Proton prefix
+#   fling installed            show games that already have a trainer
+#   fling watch                daemon: auto-launch trainers when games start
+#
+# Trainers live in ~/Trainers/"<appid> - <game name>"/Trainer.exe
+set -euo pipefail
+
+# auto-detect the Steam root (native, classic, or Flatpak install)
+detect_steam_root() {
+    local c
+    for c in \
+        "${FLING_STEAM_ROOT:-}" \
+        "$HOME/.local/share/Steam" \
+        "$HOME/.steam/steam" \
+        "$HOME/.steam/root" \
+        "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"; do
+        [ -n "$c" ] && [ -f "$c/steamapps/libraryfolders.vdf" ] && { echo "$c"; return 0; }
+    done
+    # last resort: first match anywhere it commonly lives
+    echo "$HOME/.local/share/Steam"
+}
+STEAM_ROOT="$(detect_steam_root)"
+TRAINERS_DIR="$HOME/Trainers"
+UA="Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# --- Steam library helpers ---------------------------------------------------
+libraries() {
+    grep -oP '"path"\s+"\K[^"]+' "$STEAM_ROOT/steamapps/libraryfolders.vdf" 2>/dev/null
+}
+
+# print "appid<TAB>name" for every installed game
+list_games() {
+    for lib in $(libraries); do
+        for acf in "$lib"/steamapps/appmanifest_*.acf; do
+            [ -f "$acf" ] || continue
+            appid=$(grep -oP '"appid"\s+"\K[0-9]+' "$acf" | head -1)
+            name=$(grep -oP '"name"\s+"\K[^"]+' "$acf" | head -1)
+            printf '%s\t%s\n' "$appid" "$name"
+        done
+    done | sort -u
+}
+
+# resolve a query (appid or name fragment) -> "appid<TAB>name"
+resolve_game() {
+    local q="$1" hits
+    if [[ "$q" =~ ^[0-9]+$ ]]; then
+        hits=$(list_games | awk -F'\t' -v id="$q" '$1==id')
+    else
+        hits=$(list_games | grep -i -- "$q" || true)
+    fi
+    [ -n "$hits" ] || die "no installed Steam game matches '$q' (try: fling list)"
+    if [ "$(wc -l <<<"$hits")" -gt 1 ]; then
+        echo "Multiple matches:" >&2; sed 's/^/  /' <<<"$hits" >&2
+        die "be more specific"
+    fi
+    echo "$hits"
+}
+
+# --- FLiNG site helpers --------------------------------------------------------
+# turn a game name into flingtrainer.com slug candidates
+slug_candidates() {
+    local name="$1" base
+    base=$(echo "$name" | tr '[:upper:]' '[:lower:]' \
+        | sed 's/&/and/g' | sed "s/['’:.,®™]//g" | sed 's/[^a-z0-9]\+/-/g; s/^-//; s/-$//')
+    echo "${base}-trainer"
+    # roman-numeral / number variants (iii <-> 3 handled crudely both ways)
+    echo "${base}-trainer" | sed 's/-iii-/-3-/; s/-ii-/-2-/; s/-iv-/-4-/'
+    echo "${base}-trainer" | sed 's/-3-/-iii-/; s/-2-/-ii-/; s/-4-/-iv-/'
+}
+
+# fetch trainer page for game name -> echoes page URL, or fails
+find_trainer_page() {
+    local name="$1" url code
+    while read -r slug; do
+        url="https://flingtrainer.com/trainer/${slug}/"
+        code=$(curl -sL -A "$UA" -o /dev/null -w '%{http_code}' "$url")
+        if [ "$code" = 200 ]; then echo "$url"; return 0; fi
+    done < <(slug_candidates "$name" | sort -u)
+    return 1
+}
+
+cmd_get() {
+    local q="$1" hit appid name dir page dl tmp
+    hit=$(resolve_game "$q")
+    appid=$(cut -f1 <<<"$hit"); name=$(cut -f2 <<<"$hit")
+    dir="$TRAINERS_DIR/$appid - $name"
+    echo ">>> Game: $name (appid $appid)"
+
+    echo ">>> Searching flingtrainer.com..."
+    page=$(find_trainer_page "$name") || die "no FLiNG trainer page found for '$name' — check https://flingtrainer.com manually"
+    echo ">>> Trainer page: $page"
+
+    dl=$(curl -sL -A "$UA" "$page" | grep -oP 'href="\Khttps://flingtrainer\.com/downloads/[^"]+' | head -1)
+    [ -n "$dl" ] || die "no download link found on $page"
+
+    mkdir -p "$dir"
+    tmp=$(mktemp)
+    echo ">>> Downloading trainer..."
+    curl -sL -A "$UA" -e "$page" "$dl" -o "$tmp"
+
+    case "$(file -b "$tmp")" in
+        PE32*) mv "$tmp" "$dir/Trainer.exe" ;;
+        Zip*)  unzip -o -q "$tmp" -d "$dir"; rm -f "$tmp"
+               # normalize: biggest exe becomes Trainer.exe
+               local exe
+               exe=$(find "$dir" -iname '*.exe' -printf '%s %p\n' | sort -rn | head -1 | cut -d' ' -f2-)
+               [ -n "$exe" ] && [ "$exe" != "$dir/Trainer.exe" ] && cp "$exe" "$dir/Trainer.exe" ;;
+        RAR*)  die "trainer is a .rar — install unrar or extract manually into: $dir" ;;
+        *)     rm -f "$tmp"; die "unexpected download type: $(file -b "$tmp")" ;;
+    esac
+    chmod +x "$dir/Trainer.exe"
+    echo ">>> Installed: $dir/Trainer.exe"
+    if [ "${FLING_FROM_AUTO:-}" = 1 ]; then return 0; fi
+    echo ">>> To use:  fling run $appid   (game should be running or launched right after)"
+    echo ">>> IMPORTANT: now run:  fling setup $appid"
+    echo ">>> (sets the game's launch options for trainer injection; restarts Steam once)"
+    echo ">>> After that the trainer auto-starts with the game via fling-watch."
+}
+
+# one-shot: download the trainer AND ensure global trainer-injection env.
+cmd_auto() {
+    local q="$1" hit appid name
+    hit=$(resolve_game "$q")            # fail fast if the game isn't found
+    appid=$(cut -f1 <<<"$hit"); name=$(cut -f2 <<<"$hit")
+    echo "=== fling auto: $name (appid $appid) ==="
+    echo "--- step 1/2: download trainer ---"
+    FLING_FROM_AUTO=1 cmd_get "$appid"
+    echo "--- step 2/2: ensure trainer-injection env (global) ---"
+    cmd_setup "$appid"
+    if steam_has_global_env; then
+        echo "=== done — launch $name and the trainer auto-attaches ==="
+    else
+        echo "=== trainer downloaded. One-time activation needed: fling restart-steam (or reboot) ==="
+    fi
+}
+
+cmd_run() {
+    local q="$1" hit appid name dir
+    hit=$(resolve_game "$q")
+    appid=$(cut -f1 <<<"$hit"); name=$(cut -f2 <<<"$hit")
+    dir="$TRAINERS_DIR/$appid - $name"
+    [ -f "$dir/Trainer.exe" ] || die "no trainer installed for '$name' — run: fling get $appid"
+    [ -d "$STEAM_ROOT/steamapps/compatdata/$appid/pfx" ] || die "no Proton prefix for $name — launch the game once first"
+    echo ">>> Launching trainer for $name (appid $appid) in its Proton prefix..."
+    echo ">>> Tip: start the game first (or right after); toggle cheats in the trainer window."
+    # ensure we have a display (needed when run from a tty/ssh/Claude shell):
+    # borrow the graphical session env from the running Steam process
+    if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        local spid
+        spid=$(pgrep -x steam | head -1 || true)
+        if [ -n "$spid" ]; then
+            while IFS='=' read -r k v; do
+                case "$k" in DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS) export "$k=$v";; esac
+            done < <(tr '\0' '\n' < "/proc/$spid/environ")
+            echo ">>> (borrowed display env from Steam: DISPLAY=${DISPLAY:-} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-})"
+        else
+            echo ">>> WARNING: no DISPLAY and Steam not running — trainer window may fail to appear"
+        fi
+    fi
+    # Gaming Mode (gamescope) fix: when Steam launches us as a non-Steam app,
+    # the wine window protontricks spawns carries no STEAM_GAME atom, so Steam
+    # sits at the splash forever. Find our launch AppId from the ancestor
+    # reaper process and tag the trainer window once it appears.
+    (
+        appid_tag="" p=$$
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            p=$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null) || break
+            [ -n "$p" ] && [ "$p" -gt 1 ] || break
+            if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'reaper SteamLaunch'; then
+                appid_tag=$(tr '\0' ' ' < "/proc/$p/cmdline" | grep -oP 'AppId=\K[0-9]+' | head -1)
+                break
+            fi
+        done
+        [ -n "$appid_tag" ] || exit 0
+        for _ in $(seq 1 40); do
+            for sock in /tmp/.X11-unix/X*; do
+                disp=":${sock##*X}"
+                wid=$(DISPLAY=$disp timeout 3 xdotool search --name -i "trainer" 2>/dev/null | head -1)
+                if [ -n "$wid" ]; then
+                    DISPLAY=$disp xprop -id "$wid" -f STEAM_GAME 32c -set STEAM_GAME "$appid_tag" 2>/dev/null
+                    exit 0
+                fi
+            done
+            sleep 3
+        done
+    ) &
+    # Preferred path: inject into the RUNNING game's container via its launcher
+    # service (game must be launched with STEAM_COMPAT_LAUNCHER_SERVICE=proton
+    # %command%). Same container + wineserver -> trainer can see/hook the game.
+    export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus}"
+    local lc
+    lc=$(ls "$STEAM_ROOT"/steamapps/common/SteamLinuxRuntime_*/pressure-vessel/bin/steam-runtime-launch-client 2>/dev/null | head -1)
+    if [ -n "$lc" ] && busctl --user list 2>/dev/null | grep -q "com.steampowered.App$appid\b"; then
+        echo ">>> Game launcher service detected — injecting into the game's container ✓"
+        exec "$lc" --bus-name="com.steampowered.App$appid" --directory "$HOME" -- wine "$dir/Trainer.exe"
+    fi
+    # Fallback: separate protontricks container. The trainer will NOT be able
+    # to see the game — only useful for testing the trainer UI.
+    echo ">>> WARNING: game launcher service not found (is the game running,"
+    echo ">>> with launch options STEAM_COMPAT_LAUNCHER_SERVICE=proton %command% ?)"
+    echo ">>> Falling back to a separate container — trainer will NOT see the game."
+    exec protontricks-launch --appid "$appid" "$dir/Trainer.exe"
+}
+
+# edit LaunchOptions for an appid in localconfig.vdf.
+# modes: check (rc 0=needs edit, 2=already set, 3=parse error), apply (edits in place)
+lo_edit() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import re, sys, pathlib
+path, appid, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+WANT = "STEAM_COMPAT_LAUNCHER_SERVICE=proton"
+p = pathlib.Path(path)
+data = p.read_text(encoding="utf-8", errors="surrogateescape")
+
+def done(code, msg):
+    print(msg)
+    sys.exit(code)
+
+block_re = re.compile(r'(\t{5}"' + re.escape(appid) + r'"\n\t{5}\{\n)(.*?)(\n\t{5}\})', re.S)
+m = block_re.search(data)
+if m:
+    body = m.group(2)
+    lo_re = re.compile(r'("LaunchOptions"[ \t]*")((?:[^"\\]|\\.)*)(")')
+    lm = lo_re.search(body)
+    if lm and WANT in lm.group(2):
+        done(2, "already configured")
+    if mode == "check":
+        done(0, "needs edit")
+    if lm:
+        cur = lm.group(2)
+        if "%command%" in cur:
+            new = WANT + " " + cur
+        elif cur.strip():
+            new = WANT + " %command% " + cur
+        else:
+            new = WANT + " %command%"
+        body2 = body[:lm.start(2)] + new + body[lm.end(2):]
+    else:
+        body2 = "\t" * 6 + '"LaunchOptions"\t\t"' + WANT + ' %command%"\n' + body
+    data2 = data[:m.start(2)] + body2 + data[m.end(2):]
+else:
+    if mode == "check":
+        done(0, "needs edit (new app block)")
+    am = re.search(r'\t{4}"apps"\n\t{4}\{\n', data)
+    if not am:
+        done(3, "apps section not found in " + path)
+    nb = ("\t" * 5 + '"' + appid + '"\n' + "\t" * 5 + "{\n"
+          + "\t" * 6 + '"LaunchOptions"\t\t"' + WANT + ' %command%"\n'
+          + "\t" * 5 + "}\n")
+    data2 = data[:am.end()] + nb + data[am.end():]
+
+if mode == "apply":
+    p.write_text(data2, encoding="utf-8", errors="surrogateescape")
+    done(0, "edited")
+done(0, "needs edit")
+PY
+}
+
+ENV_CONF="$HOME/.config/environment.d/10-fling-trainers.conf"
+
+# Is the running Steam already exporting the launcher-service env var?
+# (i.e. will games get a launcher service without per-game config?)
+steam_has_global_env() {
+    local spid
+    spid=$(pgrep -x steam | head -1) || return 1
+    [ -n "$spid" ] || return 1
+    tr '\0' '\n' < "/proc/$spid/environ" 2>/dev/null \
+        | grep -q '^STEAM_COMPAT_LAUNCHER_SERVICE=proton$'
+}
+
+# Global setup: make EVERY Proton game start a launcher service via a
+# persistent user-environment variable. No per-game Steam config editing, no
+# per-game Steam restart. Editing localconfig.vdf is racy on gamescope (the
+# session auto-relaunches Steam), so we avoid it entirely.
+cmd_setup() {
+    # optional game arg: only used to sanity-check a trainer exists + messaging
+    if [ $# -ge 1 ] && [ -n "${1:-}" ]; then
+        local hit appid name dir
+        hit=$(resolve_game "$1"); appid=$(cut -f1 <<<"$hit"); name=$(cut -f2 <<<"$hit")
+        dir=$(ls -d "$TRAINERS_DIR/$appid - "* 2>/dev/null | head -1)
+        [ -n "$dir" ] && [ -f "$dir/Trainer.exe" ] \
+            || echo ">>> note: no trainer downloaded yet for $name — run: fling get $appid"
+        echo ">>> Configuring trainer injection (global, applies to $name and all games)..."
+    else
+        echo ">>> Configuring trainer injection globally for all games..."
+    fi
+
+    mkdir -p "$(dirname "$ENV_CONF")"
+    if ! grep -qs '^STEAM_COMPAT_LAUNCHER_SERVICE=proton$' "$ENV_CONF"; then
+        cat > "$ENV_CONF" <<'EOF'
+# Make every Proton game start a Steam Runtime launcher service so FLiNG
+# trainers (via fling-watch) can be injected into the game's own container.
+# Managed by `fling` — global replacement for per-game launch options.
+STEAM_COMPAT_LAUNCHER_SERVICE=proton
+EOF
+        echo ">>> Wrote $ENV_CONF"
+    else
+        echo ">>> $ENV_CONF already present ✓"
+    fi
+    # apply to the current systemd user manager so a session restart picks it up
+    systemctl --user set-environment STEAM_COMPAT_LAUNCHER_SERVICE=proton 2>/dev/null || true
+
+    if steam_has_global_env; then
+        echo ">>> ACTIVE ✓ — Steam already exports the var; games will auto-attach their trainer."
+    else
+        echo ">>> Persisted ✓ but the RUNNING Steam predates it. Activate with ONE restart:"
+        echo ">>>   fling restart-steam     (bounces the gamescope session — ~20s black screen)"
+        echo ">>> or just reboot once. After that, every game with a trainer auto-attaches,"
+        echo ">>> and you never need to run setup again."
+    fi
+}
+
+# Bounce the gamescope Steam session so Steam re-reads the user environment.
+cmd_restart_steam() {
+    if pgrep -f "reaper SteamLaunch" >/dev/null 2>&1; then
+        die "a game is running — close it first, then: fling restart-steam"
+    fi
+    echo ">>> Restarting the Steam session to load the trainer environment..."
+    systemctl --user set-environment STEAM_COMPAT_LAUNCHER_SERVICE=proton 2>/dev/null || true
+    # restart the gamescope session unit (name may be @steam or plain)
+    local unit
+    unit=$(systemctl --user list-units --no-legend 'gamescope-session-plus@*' 2>/dev/null | awk '{print $1}' | head -1)
+    [ -n "$unit" ] || unit="gamescope-session-plus@steam.service"
+    echo ">>> Restarting $unit (screen will go black ~20s)..."
+    systemctl --user restart "$unit" 2>/dev/null \
+        || die "could not restart $unit — reboot to activate instead"
+}
+
+# find the Steam non-Steam-shortcut gameid for a trainer (for steam://rungameid/)
+shortcut_gameid() {
+    local appid="$1" vdf
+    vdf=$(ls "$STEAM_ROOT"/userdata/*/config/shortcuts.vdf 2>/dev/null | head -1)
+    [ -n "$vdf" ] || return 1
+    python3 - "$appid" "$vdf" <<'PY'
+import re, struct, sys, pathlib
+target, vdf = sys.argv[1], sys.argv[2]
+data = pathlib.Path(vdf).read_bytes()
+needle = f"fling run {target}".encode()
+blocks = [m for m in re.finditer(rb"\x02appid\x00(....)", data, re.S)]
+for i, m in enumerate(blocks):
+    end = blocks[i + 1].start() if i + 1 < len(blocks) else len(data)
+    if needle in data[m.start():end]:
+        appid = struct.unpack("<I", m.group(1))[0]
+        print((appid << 32) | 0x02000000)
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+# daemon: auto-launch trainers when a game with an installed trainer starts.
+# A game "starts" when its launcher service appears on the session bus, which
+# requires launch options: STEAM_COMPAT_LAUNCHER_SERVICE=proton %command%
+cmd_watch() {
+    declare -A seen
+    echo "fling watch: polling for game launcher services..."
+    while true; do
+        while read -r svc; do
+            [ -n "$svc" ] || continue
+            inst=$(busctl --user list --no-legend 2>/dev/null \
+                   | grep -oP "com\.steampowered\.App$svc\.Instance\K[0-9]+" | head -1)
+            key="$svc:${inst:-0}"
+            [ -n "${seen[$key]:-}" ] && continue
+            dir=$(ls -d "$TRAINERS_DIR/$svc - "* 2>/dev/null | head -1)
+            [ -n "$dir" ] && [ -f "$dir/Trainer.exe" ] || { seen[$key]=skip; continue; }
+            # trainer already running for this game? (e.g. daemon restarted)
+            if pgrep -f "Trainers/$svc - .*Trainer\.exe" >/dev/null 2>&1; then
+                seen[$key]=already-running; continue
+            fi
+            seen[$key]=launched
+            echo "game $svc started — auto-launching trainer"
+            # borrow session env from steam for display/steam-url handling
+            spid=$(pgrep -x steam | head -1 || true)
+            if [ -n "$spid" ]; then
+                while IFS='=' read -r k v; do
+                    case "$k" in DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS) export "$k=$v";; esac
+                done < <(tr '\0' '\n' < "/proc/$spid/environ")
+            fi
+            sleep 10   # let the game window come up first
+            # prefer launching via the trainer's Steam shortcut (switchable app
+            # in Gaming Mode); fall back to direct injection
+            if gid=$(shortcut_gameid "$svc"); then
+                echo "launching via Steam shortcut (gameid $gid)"
+                steam "steam://rungameid/$gid" >/dev/null 2>&1 &
+            else
+                echo "no Steam shortcut found — direct injection"
+                "$0" run "$svc" >/dev/null 2>&1 &
+            fi
+        done < <(busctl --user list --no-legend 2>/dev/null \
+                 | grep -oP 'com\.steampowered\.App\K[0-9]+' | sort -u)
+        sleep 5
+    done
+}
+
+cmd_installed() {
+    [ -d "$TRAINERS_DIR" ] || { echo "(none)"; return; }
+    find "$TRAINERS_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort
+}
+
+case "${1:-}" in
+    list)      list_games | column -ts $'\t' ;;
+    get)       [ $# -ge 2 ] || die "usage: fling get <name|appid>"; shift; cmd_get "$*" ;;
+    auto)      [ $# -ge 2 ] || die "usage: fling auto <name|appid>"; shift; cmd_auto "$*" ;;
+    run)       [ $# -ge 2 ] || die "usage: fling run <name|appid>"; shift; cmd_run "$*" ;;
+    setup|inject-properties) shift || true; cmd_setup "${*:-}" ;;
+    restart-steam) cmd_restart_steam ;;
+    _steamroot) echo "$STEAM_ROOT" ;;
+    _lo-edit)  lo_edit "$2" "$3" "$4" ;;
+    installed) cmd_installed ;;
+    watch)     cmd_watch ;;
+    *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
