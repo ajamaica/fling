@@ -1,0 +1,16 @@
+<Project Sdk="Godot.NET.Sdk/4.3.0">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FlingUi</RootNamespace>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The app project must not compile its standalone model-test project or generated Godot/.NET artifacts. -->
+    <Compile Remove="tests/**/*.cs" />
+    <Compile Remove=".godot/**/*.cs" />
+    <Compile Remove="**/bin/**/*.cs" />
+    <Compile Remove="**/obj/**/*.cs" />
+  </ItemGroup>
+</Project>
