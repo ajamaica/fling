@@ -106,6 +106,40 @@ class PackagingTest(unittest.TestCase):
                 self.assertNotEqual(0, p.returncode)
                 self.assertTrue(marker.is_file())
 
+    def test_missing_export_error_lists_all_supported_names(self):
+        (self.source / "fling-ui").unlink()
+
+        result = self.run_install()
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("FlingUi.x86_64", result.stderr)
+        self.assertIn("Fling UI.x86_64", result.stderr)
+
+    def test_solution_maps_release_configuration_to_release(self):
+        solution = (ROOT / "ui/FlingUi.sln").read_text(encoding="utf-8-sig")
+
+        self.assertIn("Release|Any CPU.ActiveCfg = Release|Any CPU", solution)
+        self.assertIn("Release|Any CPU.Build.0 = Release|Any CPU", solution)
+
+    def test_readme_documents_linux_export_installation(self):
+        readme = (ROOT / "README.md").read_text()
+
+        self.assertIn("fling-ui.x86_64", readme)
+        self.assertIn("./packaging/install-ui.sh /path/to/linux-export-directory", readme)
+        self.assertIn("dotnet build ui/FlingUi.sln", readme)
+        self.assertIn("Add a Non-Steam Game", readme)
+
+    def test_installs_standard_godot_linux_x86_64_export(self):
+        (self.source / "fling-ui").unlink()
+        (self.source / "fling-ui.x86_64").write_text("godot binary")
+
+        result = self.run_install()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue((self.home / ".local/share/fling-ui/fling-ui.x86_64").is_file())
+        launcher = (self.home / ".local/bin/fling-ui").read_text()
+        self.assertIn("fling-ui.x86_64", launcher)
+
     def test_rejects_symlinked_export_executable_without_touching_target(self):
         target = self.tmp / "external-executable"
         target.write_text("external")

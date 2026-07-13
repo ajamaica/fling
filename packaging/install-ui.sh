@@ -34,10 +34,12 @@ reject_unsafe_leaf() {
 }
 
 executable=""
-for candidate in "$SOURCE_DIR/fling-ui" "$SOURCE_DIR/FlingUi" "$SOURCE_DIR/Fling UI"; do
+# Godot's standard Linux export adds the .x86_64 suffix; retain support for
+# the project names used by earlier/manual exports too.
+for candidate in "$SOURCE_DIR/fling-ui" "$SOURCE_DIR/fling-ui.x86_64" "$SOURCE_DIR/FlingUi" "$SOURCE_DIR/FlingUi.x86_64" "$SOURCE_DIR/Fling UI" "$SOURCE_DIR/Fling UI.x86_64"; do
     [ -f "$candidate" ] && [ ! -L "$candidate" ] && { executable="$(basename "$candidate")"; break; }
 done
-[ -n "$executable" ] || { echo "No Linux export executable found in $SOURCE_DIR (expected fling-ui, FlingUi, or Fling UI)." >&2; exit 2; }
+[ -n "$executable" ] || { echo "No Linux export executable found in $SOURCE_DIR (expected fling-ui, fling-ui.x86_64, FlingUi, FlingUi.x86_64, Fling UI, or Fling UI.x86_64)." >&2; exit 2; }
 [ -z "$(find "$SOURCE_DIR" -type l -print -quit)" ] || { echo "Refusing export containing symlinks: $SOURCE_DIR" >&2; exit 1; }
 
 LAUNCHER="$BIN_DIR/fling-ui"
