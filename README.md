@@ -61,15 +61,21 @@ FLING_UI_MOCK=1 godot --editor project.godot
 
 Mock mode provides a functional library and operations without Steam or the CLI. Set `FLING_CLI_PATH=/path/to/bin/fling` to use a development CLI. Otherwise the app uses `~/.local/bin/fling`, with `../bin/fling` as a source-tree fallback.
 
-In the Godot .NET editor, install an export template, create a Linux/X11 preset, and export the build into a directory. Install that existing export with:
+In the Godot .NET editor, install matching export templates, create a **Linux/X11** preset, and export into a directory. Godot normally names the Linux executable `fling-ui.x86_64`; leave that filename unchanged. Then install the whole export directory (the executable, `.pck`, and `data_*` directory must stay together):
 
 ```bash
 ./packaging/install-ui.sh /path/to/linux-export-directory
 ```
 
-The script installs the export under `~/.local/share/fling-ui/`, the launcher at `~/.local/bin/fling-ui`, and the desktop entry at `~/.local/share/applications/fling-ui.desktop`. It is safe to rerun.
+For example, if the Godot export path is `/tmp/fling-export/fling-ui.x86_64`, install it with:
 
-To add it to Gaming Mode, open Steam in Desktop Mode, choose **Games → Add a Non-Steam Game**, browse to `~/.local/bin/fling-ui`, add it, then return to Gaming Mode.
+```bash
+./packaging/install-ui.sh /tmp/fling-export
+```
+
+The installer needs no root access. It copies the export under `~/.local/share/fling-ui/`, creates the launcher at `~/.local/bin/fling-ui`, and writes a desktop entry at `~/.local/share/applications/fling-ui.desktop`. It is safe to rerun after exporting an update. Install the CLI too with `./install.sh`; the UI uses that CLI for Steam discovery and trainer operations.
+
+On Bazzite or another Steam Gaming Mode system, test the app in Desktop Mode first by launching **Fling Trainer Manager** from the application menu (or run `~/.local/bin/fling-ui`). To add it to Gaming Mode, open Steam in Desktop Mode, choose **Games → Add a Non-Steam Game**, browse to `~/.local/bin/fling-ui`, add it, then return to Gaming Mode.
 
 ## Controller and keyboard
 
@@ -102,7 +108,7 @@ The CLI suite is self-contained and never downloads or executes a real trainer:
 tests/run.sh
 bash -n bin/fling install.sh uninstall.sh packaging/*.sh
 dotnet run --project ui/tests/FlingUi.Tests.csproj
-dotnet build ui/FlingUi.csproj
+dotnet build ui/FlingUi.sln
 dotnet format ui/FlingUi.csproj --verify-no-changes --no-restore
 ```
 

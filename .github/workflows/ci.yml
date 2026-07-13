@@ -18,8 +18,8 @@ jobs:
         with: { dotnet-version: "8.0.x" }
       - name: Model tests
         run: dotnet run --project ui/tests/FlingUi.Tests.csproj --configuration Release
-      - name: Godot C# build
-        run: dotnet build ui/FlingUi.csproj --configuration Release
+      - name: Godot C# solution build
+        run: dotnet build ui/FlingUi.sln --configuration Release
       - name: Formatting
         run: dotnet format ui/FlingUi.csproj --verify-no-changes --no-restore
       - name: Godot project sanity
