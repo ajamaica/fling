@@ -1,0 +1,26 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install validation tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck jq
+      - name: Bash syntax
+        run: bash -n bin/fling install.sh uninstall.sh tests/run.sh packaging/*.sh
+      - name: ShellCheck
+        run: shellcheck --severity=warning bin/fling install.sh uninstall.sh tests/run.sh packaging/*.sh
+      - name: Offline CLI tests
+        env: { FLING_TEST_OFFLINE: "1" }
+        run: tests/run.sh
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - name: Model tests
+        run: dotnet run --project ui/tests/FlingUi.Tests.csproj --configuration Release
+      - name: Godot C# build
+        run: dotnet build ui/FlingUi.csproj --configuration Release
+      - name: Formatting
+        run: dotnet format ui/FlingUi.csproj --verify-no-changes --no-restore
+      - name: Godot project sanity
+        run: test -f ui/project.godot && test -f ui/scenes/Main.tscn && grep -q 'Godot.NET.Sdk' ui/FlingUi.csproj && ! grep -R '/home/deck' ui packaging

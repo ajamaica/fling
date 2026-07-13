@@ -1,2 +1,14 @@
 # nothing to ignore yet — trainers live in ~/Trainers, not the repo
 *.swp
+*.pyc
+__pycache__/
+
+# Godot editor/import state and generated .NET build output.
+.godot/
+**/.godot/
+**/[Bb]in/
+**/[Oo]bj/
+
+# The repository's root bin directory contains the CLI source.
+!/bin/
+!/bin/fling

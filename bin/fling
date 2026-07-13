@@ -1,4 +1,4 @@
-#!/usr/bin/bash
+#!/usr/bin/env bash
 # fling — manage FLiNG trainers for Steam games on Bazzite/Proton.
 #
 #   fling list                 list installed Steam games (appid + name)
@@ -34,6 +34,107 @@ UA="Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
+# Stable JSON API used by Fling UI. Python is used only for robust VDF/string
+# parsing and JSON encoding; Steam/download operations remain in this script.
+json_local_api() {
+    local operation="$1" appid="${2:-}"
+    python3 - "$operation" "$appid" "$STEAM_ROOT" "$TRAINERS_DIR" "$0" "$ENV_CONF" <<'PY'
+import datetime, json, os, pathlib, re, shutil, subprocess, sys
+op, requested, steam_s, trainers_s, cli_s, env_conf_s = sys.argv[1:]
+steam, trainers, cli, env_conf = map(pathlib.Path, (steam_s, trainers_s, cli_s, env_conf_s))
+
+def emit(value, code=0):
+    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    raise SystemExit(code)
+def failure(operation, appid, code, error_code, message):
+    emit({"schema_version":1,"success":False,"operation":operation,"appid":appid,
+          "error_code":error_code,"message":message}, code)
+def values(text):
+    # Valve VDF quoted strings, including escaped quotes/backslashes.
+    def unescape(value): return re.sub(r'\\(["\\])', r'\1', value)
+    return [(unescape(k), unescape(v))
+            for k,v in re.findall(r'"((?:\\.|[^"\\])*)"\s*"((?:\\.|[^"\\])*)"', text)]
+def games():
+    libs=[]
+    vdf=steam/"steamapps/libraryfolders.vdf"
+    if vdf.is_file():
+        try:
+            for k,v in values(vdf.read_text(errors="replace")):
+                if k == "path": libs.append(pathlib.Path(v))
+        except OSError: pass
+    if steam not in libs: libs.insert(0, steam)
+    result={}
+    for lib in libs:
+        for acf in sorted((lib/"steamapps").glob("appmanifest_*.acf")):
+            try: fields=dict(values(acf.read_text(errors="replace")))
+            except OSError: continue
+            appid_text=fields.get("appid", "")
+            if not appid_text.isdigit() or not fields.get("name"): continue
+            appid=int(appid_text)
+            name=fields["name"]
+            candidates=list(trainers.glob(appid_text+" - *")) if trainers.is_dir() else []
+            tp=None
+            for directory in candidates:
+                exe=directory/"Trainer.exe"
+                if directory.is_dir() and not directory.is_symlink() and exe.is_file() and not exe.is_symlink():
+                    tp=str(exe); break
+            result[appid]={"appid":appid,"name":name,"install_dir":fields.get("installdir", ""),
+                "library_path":str(lib),"trainer_installed":tp is not None,"trainer_path":tp,"running":False}
+    return [result[k] for k in sorted(result, key=lambda x:int(x))]
+
+if op in ("games", "installed"):
+    found=games()
+    if op == "installed": found=[g for g in found if g["trainer_installed"]]
+    emit({"schema_version":1,"games":found})
+if op == "status":
+    def runs(args):
+        try: return subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        except (OSError, subprocess.SubprocessError): return False
+    configured=False
+    try: configured=bool(re.search(r'^STEAM_COMPAT_LAUNCHER_SERVICE=proton$', env_conf.read_text(), re.M))
+    except OSError: pass
+    steam_running=runs(["pgrep","-x","steam"])
+    active=False
+    if steam_running:
+        try:
+            pid=subprocess.check_output(["pgrep","-x","steam"], text=True).splitlines()[0]
+            active=b"STEAM_COMPAT_LAUNCHER_SERVICE=proton" in pathlib.Path("/proc",pid,"environ").read_bytes().split(b"\0")
+        except (OSError, subprocess.SubprocessError, IndexError): pass
+    unit=pathlib.Path.home()/".config/systemd/user/fling-watch.service"
+    emit({"schema_version":1,"cli_installed":cli.is_file(),"watcher_installed":unit.is_file(),
+          "watcher_active":runs(["systemctl","--user","is-active","--quiet","fling-watch.service"]),
+          "global_environment_configured":configured,"steam_environment_active":active,
+          "steam_running":steam_running,"steam_root":str(steam),"trainers_directory":str(trainers)})
+if not requested.isdigit(): failure(op, 0, 2, "invalid_args", "appid must be numeric")
+requested_id=int(requested)
+match=next((g for g in games() if g["appid"] == requested_id), None)
+if match is None: failure(op, requested_id, 3, "game_missing", "Installed Steam game not found")
+if op == "refresh":
+    emit({"schema_version":1,"success":True,"operation":"refresh","appid":requested_id,"name":match["name"],
+          "game":match,"message":"Game state refreshed"})
+if op == "remove":
+    if trainers.is_symlink():
+        failure(op, requested_id, 9, "unsafe_path", "Refusing unsafe trainer path")
+    roots=[]
+    if trainers.is_dir(): roots=list(trainers.glob(requested+" - *"))
+    valid=[]
+    root_real=trainers.resolve(strict=False)
+    for directory in roots:
+        try:
+            resolved=directory.resolve(strict=True)
+            if directory.is_symlink() or resolved.parent != root_real: failure(op, requested_id, 9, "unsafe_path", "Refusing unsafe trainer path")
+            exe=directory/"Trainer.exe"
+            if exe.is_file() and not exe.is_symlink(): valid.append(directory)
+        except OSError: failure(op, requested_id, 9, "unsafe_path", "Refusing unsafe trainer path")
+    if not valid: failure(op, requested_id, 7, "local_trainer_missing", "No local trainer is installed")
+    if len(valid) != 1: failure(op, requested_id, 9, "unsafe_path", "Multiple trainer directories found; refusing removal")
+    shutil.rmtree(valid[0])
+    emit({"schema_version":1,"success":True,"operation":"remove","appid":requested_id,"name":match["name"],
+          "message":"Trainer removed successfully","restart_required":False})
+failure(op, requested, 2, "invalid_args", "Unsupported operation")
+PY
+}
+
 # --- Steam library helpers ---------------------------------------------------
 libraries() {
     grep -oP '"path"\s+"\K[^"]+' "$STEAM_ROOT/steamapps/libraryfolders.vdf" 2>/dev/null
@@ -41,14 +142,15 @@ libraries() {
 
 # print "appid<TAB>name" for every installed game
 list_games() {
-    for lib in $(libraries); do
+    while IFS= read -r lib; do
+        [ -n "$lib" ] || continue
         for acf in "$lib"/steamapps/appmanifest_*.acf; do
             [ -f "$acf" ] || continue
             appid=$(grep -oP '"appid"\s+"\K[0-9]+' "$acf" | head -1)
             name=$(grep -oP '"name"\s+"\K[^"]+' "$acf" | head -1)
             printf '%s\t%s\n' "$appid" "$name"
         done
-    done | sort -u
+    done < <(libraries) | sort -u
 }
 
 # resolve a query (appid or name fragment) -> "appid<TAB>name"
@@ -84,41 +186,145 @@ find_trainer_page() {
     local name="$1" url code
     while read -r slug; do
         url="https://flingtrainer.com/trainer/${slug}/"
-        code=$(curl -sL -A "$UA" -o /dev/null -w '%{http_code}' "$url")
+        code=$(curl --silent --show-error --fail --location --connect-timeout 10 --max-time 30 -A "$UA" -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)
         if [ "$code" = 200 ]; then echo "$url"; return 0; fi
     done < <(slug_candidates "$name" | sort -u)
     return 1
 }
 
+safe_trainer_name() {
+    python3 - "$1" <<'PY'
+import sys, unicodedata
+name=sys.argv[1]
+safe="".join("_" if c in "/\\" or unicodedata.category(c).startswith("C") else c for c in name)
+raw=safe.encode("utf-8")
+if len(raw) > 180:
+    raw=raw[:180]
+    while True:
+        try: safe=raw.decode("utf-8"); break
+        except UnicodeDecodeError: raw=raw[:-1]
+print(safe or "_")
+PY
+}
+
+# Resolve the one canonical trainer directory. This deliberately rejects
+# symlink roots/destinations and ambiguous legacy duplicates. Bash cannot make
+# the subsequent use descriptor-atomic, so callers revalidate before writes.
+trainer_dir_for_game() {
+    local appid="$1" name="${2:-}" require_exe="${3:-0}" safe_name candidate found=""
+    [ ! -L "$TRAINERS_DIR" ] || return 1
+    if [ -n "$name" ]; then
+        safe_name=$(safe_trainer_name "$name") || return 1
+        candidate="$TRAINERS_DIR/$appid - $safe_name"
+        [ ! -L "$candidate" ] || return 1
+        if [ "$require_exe" = 1 ]; then
+            [ -d "$candidate" ] && [ ! -L "$candidate/Trainer.exe" ] && [ -f "$candidate/Trainer.exe" ] || return 1
+        fi
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    for candidate in "$TRAINERS_DIR/$appid - "*; do
+        [ -e "$candidate" ] || continue
+        [ -d "$candidate" ] && [ ! -L "$candidate" ] \
+            && [ -f "$candidate/Trainer.exe" ] && [ ! -L "$candidate/Trainer.exe" ] || continue
+        [ -z "$found" ] || return 1
+        found="$candidate"
+    done
+    [ -n "$found" ] || return 1
+    printf '%s\n' "$found"
+}
+
+zip_archive_is_safe() {
+    python3 - "$1" <<'PY'
+import pathlib, stat, sys, zipfile
+
+MAX_MEMBERS = 1024
+MAX_FILE_SIZE = 256 * 1024 * 1024
+MAX_TOTAL_SIZE = 512 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 200
+
+def safe_member(info):
+    name=info.filename
+    normalized=name.replace("\\", "/")
+    path=pathlib.PurePosixPath(normalized)
+    if not name or "\0" in name or path.is_absolute() or any(p == ".." for p in path.parts):
+        return False
+    if pathlib.PureWindowsPath(name).is_absolute():
+        return False
+    mode=(info.external_attr >> 16) & 0xffff
+    kind=stat.S_IFMT(mode)
+    return not stat.S_ISLNK(mode) and kind in (0, stat.S_IFREG, stat.S_IFDIR)
+
+try:
+    with zipfile.ZipFile(sys.argv[1]) as archive:
+        infos=archive.infolist()
+        if not infos or len(infos) > MAX_MEMBERS or not all(safe_member(info) for info in infos):
+            raise ValueError("unsafe ZIP member")
+        total=0
+        for info in infos:
+            if info.file_size > MAX_FILE_SIZE:
+                raise ValueError("ZIP member too large")
+            total += info.file_size
+            if total > MAX_TOTAL_SIZE:
+                raise ValueError("ZIP expands too large")
+            if info.file_size and (info.compress_size == 0 or info.file_size / info.compress_size > MAX_COMPRESSION_RATIO):
+                raise ValueError("ZIP compression ratio too high")
+except (OSError, ValueError, zipfile.BadZipFile):
+    raise SystemExit(1)
+PY
+}
+
 cmd_get() {
-    local q="$1" hit appid name dir page dl tmp
+    local q="$1" hit appid name safe_name dir page dl tmp
     hit=$(resolve_game "$q")
     appid=$(cut -f1 <<<"$hit"); name=$(cut -f2 <<<"$hit")
-    dir="$TRAINERS_DIR/$appid - $name"
+    dir=$(trainer_dir_for_game "$appid" "$name") || die "refusing unsafe trainer path"
     echo ">>> Game: $name (appid $appid)"
 
     echo ">>> Searching flingtrainer.com..."
     page=$(find_trainer_page "$name") || die "no FLiNG trainer page found for '$name' — check https://flingtrainer.com manually"
     echo ">>> Trainer page: $page"
 
-    dl=$(curl -sL -A "$UA" "$page" | grep -oP 'href="\Khttps://flingtrainer\.com/downloads/[^"]+' | head -1)
+    dl=$(curl --silent --show-error --fail --location --connect-timeout 10 --max-time 30 -A "$UA" "$page" | grep -oP 'href="\Khttps://flingtrainer\.com/downloads/[^"]+' | head -1)
     [ -n "$dl" ] || die "no download link found on $page"
 
-    mkdir -p "$dir"
     tmp=$(mktemp)
     echo ">>> Downloading trainer..."
-    curl -sL -A "$UA" -e "$page" "$dl" -o "$tmp"
+    curl --silent --show-error --fail --location --connect-timeout 15 --max-time 240 -A "$UA" -e "$page" "$dl" -o "$tmp"
+    local download_size detected
+    download_size=$(wc -c < "$tmp")
+    [ "$download_size" -ge 2 ] && [ "$download_size" -le 209715200 ] || { rm -f "$tmp"; die "downloaded file has an invalid size"; }
+    detected=$(file -b "$tmp")
 
-    case "$(file -b "$tmp")" in
-        PE32*) mv "$tmp" "$dir/Trainer.exe" ;;
-        Zip*)  unzip -o -q "$tmp" -d "$dir"; rm -f "$tmp"
+    dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; die "refusing unsafe trainer path"; }
+    [ ! -e "$dir" ] || rm -rf -- "$dir"
+    dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; die "refusing unsafe trainer path"; }
+    mkdir -p "$dir"
+
+    case "$detected" in
+        PE32*) dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; die "refusing unsafe trainer path"; }
+               mv "$tmp" "$dir/Trainer.exe" ;;
+        Zip*)  command -v unzip >/dev/null || die "unzip is required for this trainer"
+               zip_archive_is_safe "$tmp" || { rm -f "$tmp"; rmdir "$dir" 2>/dev/null || true; die "trainer ZIP contains an unsafe entry"; }
+               dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; die "refusing unsafe trainer path"; }
+               unzip -o -q "$tmp" -d "$dir"; rm -f "$tmp"
                # normalize: biggest exe becomes Trainer.exe
                local exe
-               exe=$(find "$dir" -iname '*.exe' -printf '%s %p\n' | sort -rn | head -1 | cut -d' ' -f2-)
-               [ -n "$exe" ] && [ "$exe" != "$dir/Trainer.exe" ] && cp "$exe" "$dir/Trainer.exe" ;;
+               exe=$(python3 - "$dir" <<'PY'
+import pathlib,sys
+files=[p for p in pathlib.Path(sys.argv[1]).rglob("*") if p.is_file() and p.suffix.lower()==".exe" and not p.is_symlink()]
+print(max(files,key=lambda p:p.stat().st_size) if files else "")
+PY
+)
+               if [ -z "$exe" ]; then rm -rf -- "$dir"; die "trainer ZIP contains no executable"; fi
+               if [ "$exe" != "$dir/Trainer.exe" ]; then
+                   dir=$(trainer_dir_for_game "$appid" "$name") || { rm -rf -- "$dir"; die "refusing unsafe trainer path"; }
+                   cp "$exe" "$dir/Trainer.exe"
+               fi ;;
         RAR*)  die "trainer is a .rar — install unrar or extract manually into: $dir" ;;
-        *)     rm -f "$tmp"; die "unexpected download type: $(file -b "$tmp")" ;;
+        *)     rm -f "$tmp"; die "unexpected download type: $detected" ;;
     esac
+    dir=$(trainer_dir_for_game "$appid" "$name" 1) || { rm -rf -- "$dir"; die "trainer executable is missing or unsafe"; }
     chmod +x "$dir/Trainer.exe"
     echo ">>> Installed: $dir/Trainer.exe"
     if [ "${FLING_FROM_AUTO:-}" = 1 ]; then return 0; fi
@@ -126,6 +332,100 @@ cmd_get() {
     echo ">>> IMPORTANT: now run:  fling setup $appid"
     echo ">>> (sets the game's launch options for trainer injection; restarts Steam once)"
     echo ">>> After that the trainer auto-starts with the game via fling-watch."
+}
+
+json_failure() {
+    local operation="$1" appid="$2" error_code="$3" message="$4" rc="$5"
+    python3 - "$operation" "$appid" "$error_code" "$message" <<'PY'
+import json,sys
+appid=int(sys.argv[2]) if sys.argv[2].isdigit() else 0
+print(json.dumps({"schema_version":1,"success":False,"operation":sys.argv[1],"appid":appid,
+ "error_code":sys.argv[3],"message":sys.argv[4]}, separators=(",",":")))
+PY
+    return "$rc"
+}
+
+# Install for the JSON API. stdout is reserved for exactly one JSON object.
+cmd_install_json() {
+    local appid="$1" game_json name safe_name page dl tmp detected size dir exe sha restart
+    [[ "$appid" =~ ^[0-9]+$ ]] || { json_failure install "$appid" invalid_args "appid must be numeric" 2; return; }
+    command -v python3 >/dev/null || { json_failure install "$appid" dependency_missing "python3 is required" 8; return; }
+    command -v curl >/dev/null || { json_failure install "$appid" dependency_missing "curl is required" 8; return; }
+    game_json=$(json_local_api games) || { json_failure install "$appid" general_error "Could not read Steam games" 1; return; }
+    name=$(python3 -c 'import json,sys; print(next((g["name"] for g in json.load(sys.stdin)["games"] if g["appid"]==int(sys.argv[1])),""))' "$appid" <<<"$game_json")
+    [ -n "$name" ] || { json_failure install "$appid" game_missing "Installed Steam game not found" 3; return; }
+    if ! dir=$(trainer_dir_for_game "$appid" "$name"); then
+        json_failure install "$appid" unsafe_path "Refusing unsafe trainer path" 9; return
+    fi
+
+    while IFS= read -r slug; do
+        page="https://flingtrainer.com/trainer/$slug/"
+        if [ "$(curl --silent --show-error --fail --location --connect-timeout 10 --max-time 30 -A "$UA" -o /dev/null -w '%{http_code}' "$page" 2>/dev/null || true)" = 200 ]; then break; fi
+        page=""
+    done < <(slug_candidates "$name" | sort -u)
+    [ -n "$page" ] || { json_failure install "$appid" remote_trainer_missing "No trainer page was found" 4; return; }
+    dl=$(curl --silent --show-error --fail --location --connect-timeout 10 --max-time 30 -A "$UA" "$page" 2>/dev/null \
+        | grep -oE 'href="https://flingtrainer\.com/downloads/[^" ]+' | head -1 | cut -d'"' -f2 || true)
+    [ -n "$dl" ] || { json_failure install "$appid" remote_trainer_missing "No trainer download was found" 4; return; }
+
+    tmp=$(mktemp "${TMPDIR:-/tmp}/fling-download.XXXXXX") || { json_failure install "$appid" general_error "Could not create temporary file" 1; return; }
+    if ! curl --silent --show-error --fail --location --connect-timeout 15 --max-time 240 -A "$UA" -e "$page" "$dl" -o "$tmp" 2>/dev/null; then
+        rm -f "$tmp"; json_failure install "$appid" network_error "Trainer download failed" 5; return
+    fi
+    size=$(wc -c < "$tmp" | tr -d ' ')
+    if [ "$size" -lt 2 ] || [ "$size" -gt 209715200 ]; then
+        rm -f "$tmp"; json_failure install "$appid" invalid_file "Downloaded file has an invalid size" 6; return
+    fi
+    detected=$(file -b "$tmp" 2>/dev/null || true)
+    # Start from a clean, verified directory so pre-existing symlinks within an
+    # earlier installation cannot redirect archive or metadata writes.
+    dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; json_failure install "$appid" unsafe_path "Refusing unsafe trainer path" 9; return; }
+    if [ -e "$dir" ]; then rm -rf -- "$dir"; fi
+    dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; json_failure install "$appid" unsafe_path "Refusing unsafe trainer path" 9; return; }
+    mkdir -p "$dir"
+    case "$detected" in
+        PE32*) dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; json_failure install "$appid" unsafe_path "Refusing unsafe trainer path" 9; return; }
+               mv "$tmp" "$dir/Trainer.exe" ;;
+        Zip*)
+            command -v unzip >/dev/null || { rm -f "$tmp"; rmdir "$dir" 2>/dev/null || true; json_failure install "$appid" dependency_missing "unzip is required for this trainer" 8; return; }
+            if ! zip_archive_is_safe "$tmp"; then
+                rm -f "$tmp"; rmdir "$dir" 2>/dev/null || true
+                json_failure install "$appid" invalid_file "Trainer ZIP contains an unsafe entry" 6; return
+            fi
+            dir=$(trainer_dir_for_game "$appid" "$name") || { rm -f "$tmp"; json_failure install "$appid" unsafe_path "Refusing unsafe trainer path" 9; return; }
+            if ! unzip -o -q "$tmp" -d "$dir" >&2; then rm -f "$tmp"; json_failure install "$appid" invalid_file "Trainer ZIP could not be extracted" 6; return; fi
+            rm -f "$tmp"
+            exe=$(python3 - "$dir" <<'PY'
+import pathlib,sys
+files=[p for p in pathlib.Path(sys.argv[1]).rglob("*") if p.is_file() and p.suffix.lower()==".exe" and not p.is_symlink()]
+print(max(files,key=lambda p:p.stat().st_size) if files else "")
+PY
+)
+            [ -n "$exe" ] || { rm -rf -- "$dir"; json_failure install "$appid" invalid_file "Trainer ZIP contains no executable" 6; return; }
+            if [ "$exe" != "$dir/Trainer.exe" ]; then
+                dir=$(trainer_dir_for_game "$appid" "$name") || { rm -rf -- "$dir"; json_failure install "$appid" unsafe_path "Refusing unsafe trainer path" 9; return; }
+                cp "$exe" "$dir/Trainer.exe"
+            fi
+            ;;
+        *) rm -f "$tmp"; rmdir "$dir" 2>/dev/null || true; json_failure install "$appid" invalid_file "Unexpected download type: $detected" 6; return ;;
+    esac
+    dir=$(trainer_dir_for_game "$appid" "$name" 1) || { rm -rf -- "$dir"; json_failure install "$appid" invalid_file "Trainer executable is missing" 6; return; }
+    chmod +x "$dir/Trainer.exe"
+    if command -v sha256sum >/dev/null; then sha=$(sha256sum "$dir/Trainer.exe" | awk '{print $1}'); else sha=$(shasum -a 256 "$dir/Trainer.exe" | awk '{print $1}'); fi
+    python3 - "$dir/trainer-metadata.json" "$appid" "$name" "$page" "$dl" "$sha" <<'PY'
+import datetime,json,pathlib,sys
+path,*v=sys.argv[1:]
+data=dict(zip(("game_name","source_page","download_url","sha256"),v[1:]))
+data["appid"]=int(v[0])
+data.update(schema_version=1,installed_at=datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"))
+pathlib.Path(path).write_text(json.dumps(data,ensure_ascii=False,indent=2)+"\n")
+PY
+    if steam_has_global_env; then restart=false; else restart=true; fi
+    python3 - "$appid" "$name" "$dir/Trainer.exe" "$restart" <<'PY'
+import json,sys
+print(json.dumps({"schema_version":1,"success":True,"operation":"install","appid":int(sys.argv[1]),"name":sys.argv[2],
+ "trainer_path":sys.argv[3],"message":"Trainer installed successfully","restart_required":sys.argv[4]=="true"},separators=(",",":")))
+PY
 }
 
 # one-shot: download the trainer AND ensure global trainer-injection env.
@@ -149,8 +449,7 @@ cmd_run() {
     local q="$1" hit appid name dir
     hit=$(resolve_game "$q")
     appid=$(cut -f1 <<<"$hit"); name=$(cut -f2 <<<"$hit")
-    dir="$TRAINERS_DIR/$appid - $name"
-    [ -f "$dir/Trainer.exe" ] || die "no trainer installed for '$name' — run: fling get $appid"
+    dir=$(trainer_dir_for_game "$appid" "$name" 1) || die "no trainer installed for '$name' — run: fling get $appid"
     [ -d "$STEAM_ROOT/steamapps/compatdata/$appid/pfx" ] || die "no Proton prefix for $name — launch the game once first"
     echo ">>> Launching trainer for $name (appid $appid) in its Proton prefix..."
     echo ">>> Tip: start the game first (or right after); toggle cheats in the trainer window."
@@ -288,8 +587,8 @@ cmd_setup() {
     if [ $# -ge 1 ] && [ -n "${1:-}" ]; then
         local hit appid name dir
         hit=$(resolve_game "$1"); appid=$(cut -f1 <<<"$hit"); name=$(cut -f2 <<<"$hit")
-        dir=$(ls -d "$TRAINERS_DIR/$appid - "* 2>/dev/null | head -1)
-        [ -n "$dir" ] && [ -f "$dir/Trainer.exe" ] \
+        dir=$(trainer_dir_for_game "$appid" "$name" 1 2>/dev/null || true)
+        [ -n "$dir" ] \
             || echo ">>> note: no trainer downloaded yet for $name — run: fling get $appid"
         echo ">>> Configuring trainer injection (global, applies to $name and all games)..."
     else
@@ -371,8 +670,8 @@ cmd_watch() {
                    | grep -oP "com\.steampowered\.App$svc\.Instance\K[0-9]+" | head -1)
             key="$svc:${inst:-0}"
             [ -n "${seen[$key]:-}" ] && continue
-            dir=$(ls -d "$TRAINERS_DIR/$svc - "* 2>/dev/null | head -1)
-            [ -n "$dir" ] && [ -f "$dir/Trainer.exe" ] || { seen[$key]=skip; continue; }
+            dir=$(trainer_dir_for_game "$svc" "" 1 2>/dev/null || true)
+            [ -n "$dir" ] || { seen[$key]=skip; continue; }
             # trainer already running for this game? (e.g. daemon restarted)
             if pgrep -f "Trainers/$svc - .*Trainer\.exe" >/dev/null 2>&1; then
                 seen[$key]=already-running; continue
@@ -408,6 +707,11 @@ cmd_installed() {
 }
 
 case "${1:-}" in
+    games)     [ "${2:-}" = "--json" ] || { echo "usage: fling games --json" >&2; exit 2; }; json_local_api games ;;
+    status)    [ "${2:-}" = "--json" ] || { echo "usage: fling status --json" >&2; exit 2; }; json_local_api status ;;
+    install)   [ "${3:-}" = "--json" ] || { echo '{"schema_version":1,"success":false,"operation":"install","appid":0,"error_code":"invalid_args","message":"usage: fling install <appid> --json"}'; exit 2; }; cmd_install_json "$2" ;;
+    remove)    [ "${3:-}" = "--json" ] || { echo '{"schema_version":1,"success":false,"operation":"remove","appid":0,"error_code":"invalid_args","message":"usage: fling remove <appid> --json"}'; exit 2; }; json_local_api remove "$2" ;;
+    refresh)   [ "${3:-}" = "--json" ] || { echo '{"schema_version":1,"success":false,"operation":"refresh","appid":0,"error_code":"invalid_args","message":"usage: fling refresh <appid> --json"}'; exit 2; }; json_local_api refresh "$2" ;;
     list)      list_games | column -ts $'\t' ;;
     get)       [ $# -ge 2 ] || die "usage: fling get <name|appid>"; shift; cmd_get "$*" ;;
     auto)      [ $# -ge 2 ] || die "usage: fling auto <name|appid>"; shift; cmd_auto "$*" ;;
@@ -416,7 +720,7 @@ case "${1:-}" in
     restart-steam) cmd_restart_steam ;;
     _steamroot) echo "$STEAM_ROOT" ;;
     _lo-edit)  lo_edit "$2" "$3" "$4" ;;
-    installed) cmd_installed ;;
+    installed) if [ "${2:-}" = "--json" ]; then json_local_api installed; else cmd_installed; fi ;;
     watch)     cmd_watch ;;
     *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

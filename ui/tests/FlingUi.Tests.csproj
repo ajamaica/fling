@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework><OutputType>Exe</OutputType><IsPackable>false</IsPackable><Nullable>enable</Nullable><NuGetAudit>false</NuGetAudit><RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources></PropertyGroup>
+  <ItemGroup><Compile Include="../models/ApiModels.cs" Link="ApiModels.cs" /></ItemGroup>
+</Project>
