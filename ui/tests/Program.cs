@@ -17,4 +17,13 @@ const string commandJson = """{"schema_version":1,"success":false,"operation":"i
 var command = JsonSerializer.Deserialize<CommandResponse>(commandJson)!;
 Assert(!command.Success && command.ErrorCode == "network_error", "command error contract did not deserialize");
 Assert(command.AppId == 20, "command appid was not numeric");
+
+var namedCard = GameCardPresentation.For(games.Games[0]);
+Assert(namedCard.Title == "Space Game", "card title was not preserved");
+Assert(namedCard.ArtworkFallback == "◆", "card did not provide a deliberate artwork fallback");
+
+var unnamedGame = games.Games[0] with { Name = "   " };
+var unnamedCard = GameCardPresentation.For(unnamedGame);
+Assert(unnamedCard.Title == "Unknown game (AppID 20)", "blank game name did not get a visible title fallback");
+Assert(unnamedCard.AccessibleText.Contains(unnamedCard.Title), "card accessible text omitted the fallback title");
 Console.WriteLine("Model JSON contract tests passed.");

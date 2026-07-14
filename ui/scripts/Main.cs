@@ -77,7 +77,7 @@ public partial class Main : Control
         {
             var response = await _client.GetGamesAsync(_loadCts.Token);
             if (!IsInsideTree()) return;
-            _games.Clear(); _games.AddRange(response.Games.OrderBy(g => g.Name));
+            _games.Clear(); _games.AddRange(response.Games.OrderBy(g => GameCardPresentation.For(g).Title));
             _status.Text = $"{_games.Count} games"; RenderCards();
         }
         catch (Exception e) when (e is FlingClientException or OperationCanceledException)
@@ -94,7 +94,7 @@ public partial class Main : Control
         foreach (var child in _grid.GetChildren()) child.QueueFree();
         var query = _search.Text.Trim();
         var visible = _games.Where(g => (_filter == 0 || (_filter == 1) == g.TrainerInstalled)
-            && (query.Length == 0 || g.Name.Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
+            && (query.Length == 0 || GameCardPresentation.For(g).Title.Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
         if (visible.Count == 0)
         {
             var empty = new Label { Text = _games.Count == 0 ? "No Steam games found. Check Settings for CLI status." : "No games match this search and filter." };
@@ -103,25 +103,52 @@ public partial class Main : Control
         Button? focus = null;
         foreach (var game in visible)
         {
+            var presentation = GameCardPresentation.For(game);
             var card = new Button
             {
                 CustomMinimumSize = new Vector2(270, 250),
-                Text = $"◆\n{game.Name}\n\n{(game.TrainerInstalled ? "TRAINER READY" : "NOT INSTALLED")}\nAppID {game.AppId}",
-                TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
-                TooltipText = game.Name
+                TooltipText = presentation.AccessibleText
             };
+            var content = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+            content.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect, LayoutPresetMode.Minsize, 12);
+            var artwork = new TextureRect
+            {
+                Texture = ArtworkService.CreateFallback(),
+                CustomMinimumSize = new Vector2(0, 148),
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            content.AddChild(artwork);
+            var title = new Label
+            {
+                Text = presentation.Title,
+                TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            title.AddThemeFontSizeOverride("font_size", 22); content.AddChild(title);
+            content.AddChild(new Label { Text = $"{presentation.Status}  ·  AppID {game.AppId}", HorizontalAlignment = HorizontalAlignment.Center, MouseFilter = MouseFilterEnum.Ignore });
+            card.AddChild(content);
             card.Pressed += () => ShowDetails(game); _grid.AddChild(card);
             if (game.AppId == _restoreFocusAppId) focus = card;
-            _ = SetCardArtworkHintAsync(card, game);
+            _ = SetCardArtworkHintAsync(artwork, game);
         }
         (focus ?? _grid.GetChildOrNull<Button>(0))?.CallDeferred(Control.MethodName.GrabFocus);
     }
 
-    private async Task SetCardArtworkHintAsync(Button card, SteamGame game)
+    private async Task SetCardArtworkHintAsync(TextureRect artwork, SteamGame game)
     {
-        var texture = await _artwork.FindAsync(game);
-        if (!IsInstanceValid(card) || texture is null) return;
-        card.Icon = texture; card.ExpandIcon = true;
+        try
+        {
+            var texture = await _artwork.FindAsync(game);
+            if (IsInstanceValid(artwork) && texture is not null) artwork.Texture = texture;
+        }
+        catch (Exception e)
+        {
+            // The fallback is already visible; a later library refresh retries the lookup.
+            _log.Error($"Artwork lookup failed for AppID {game.AppId}: {e.Message}");
+        }
     }
 
     private void ShowDetails(SteamGame game)
