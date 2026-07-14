@@ -59,14 +59,25 @@ public partial class Main : Control
         _search.TextChanged += _ => RenderCards(); tools.AddChild(_search);
         _filterButton = Button($"Filter: {Filters[_filter]}  [LB/RB]", () => ChangeFilter(1)); tools.AddChild(_filterButton);
         tools.AddChild(Button("Refresh  [R]", () => _ = LoadGamesAsync()));
+        var viewportSlot = new Control
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            ClipContents = true
+        };
+        _root.AddChild(viewportSlot);
+        var viewportMargins = new MarginContainer();
+        viewportMargins.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        viewportMargins.AddThemeConstantOverride("margin_bottom", 12);
+        viewportSlot.AddChild(viewportMargins);
         var scroll = new ScrollContainer
         {
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
             FollowFocus = true
-        }; _root.AddChild(scroll);
+        }; viewportMargins.AddChild(scroll);
         _grid = new GridContainer { Columns = 4, SizeFlagsHorizontal = SizeFlags.ExpandFill }; _grid.AddThemeConstantOverride("h_separation", 16); _grid.AddThemeConstantOverride("v_separation", 16); scroll.AddChild(_grid);
-        _root.AddChild(new Label { Text = "A Select   B Back   X Install/Remove   LB/RB Filter   Y Refresh   Menu Settings", Modulate = new Color("aeb5bd") });
+        var footer = new Label { Text = "A Select   B Back   X Install/Remove   LB/RB Filter   Y Refresh   Menu Settings", Modulate = new Color("aeb5bd") };
+        _root.AddChild(footer);
     }
 
     private async Task LoadGamesAsync()

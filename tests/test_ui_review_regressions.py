@@ -7,6 +7,35 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class UiReviewRegressionTest(unittest.TestCase):
+    def test_library_scroll_viewport_reserves_footer_clearance(self):
+        source = (ROOT / "ui/scripts/Main.cs").read_text()
+
+        build_library = re.search(
+            r"private void BuildLibrary\(\)(.*?)\n    }\n\n    private async Task LoadGamesAsync",
+            source,
+            re.DOTALL,
+        ).group(1)
+        self.assertRegex(
+            build_library,
+            r"viewportSlot = new Control\s*\{(?s:.*?)"
+            r"SizeFlagsVertical = SizeFlags\.ExpandFill(?s:.*?)ClipContents = true",
+        )
+        self.assertIn("_root.AddChild(viewportSlot)", build_library)
+        self.assertIn("viewportSlot.AddChild(viewportMargins)", build_library)
+        self.assertIn(
+            "viewportMargins.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect)",
+            build_library,
+        )
+        self.assertRegex(
+            build_library,
+            r'viewportMargins\.AddThemeConstantOverride\("margin_bottom",\s*\d+\)',
+        )
+        self.assertIn("viewportMargins.AddChild(scroll)", build_library)
+        self.assertLess(
+            build_library.index("_root.AddChild(viewportSlot)"),
+            build_library.index("_root.AddChild(footer)"),
+        )
+
     def test_async_ui_updates_are_guarded_after_await(self):
         source = (ROOT / "ui/scripts/Main.cs").read_text()
 
