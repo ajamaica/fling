@@ -46,7 +46,7 @@ class UiReviewRegressionTest(unittest.TestCase):
         main_source = (ROOT / "ui/scripts/Main.cs").read_text()
         self.assertIn("Texture = ArtworkService.Fallback", main_source)
 
-    def test_library_cards_bound_and_clip_artwork_above_metadata(self):
+    def test_library_cards_center_artwork_inside_symmetric_bounded_padding(self):
         source = (ROOT / "ui/scripts/Main.cs").read_text()
 
         render_cards = re.search(
@@ -60,11 +60,28 @@ class UiReviewRegressionTest(unittest.TestCase):
             r"artworkViewport = new (?:PanelContainer|Control)\s*\{(?s:.*?)"
             r"CustomMinimumSize = new Vector2\(0, 148\)(?s:.*?)ClipContents = true",
         )
+        artwork_padding = re.search(
+            r"artworkPadding = new MarginContainer(?P<body>.*?)"
+            r"content\.AddChild\(artworkPadding\)",
+            render_cards,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(artwork_padding, "artwork needs container-managed padding")
+        padding_body = artwork_padding.group("body")
+        left = re.search(r'margin_left",\s*(\d+)', padding_body)
+        right = re.search(r'margin_right",\s*(\d+)', padding_body)
+        self.assertIsNotNone(left, "artwork needs a visible left inset")
+        self.assertIsNotNone(right, "artwork needs a definite right inset")
+        self.assertGreater(int(left.group(1)), 0)
+        self.assertEqual(left.group(1), right.group(1), "artwork inset must be symmetric")
+        self.assertIn("artworkPadding.AddChild(artworkViewport)", padding_body)
         self.assertIn(
             "artwork.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect)", render_cards
         )
+        self.assertIn("StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered", render_cards)
+        self.assertNotIn("StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered", render_cards)
         self.assertLess(
-            render_cards.index("content.AddChild(artworkViewport)"),
+            render_cards.index("content.AddChild(artworkPadding)"),
             render_cards.index("content.AddChild(title)"),
         )
 

@@ -118,9 +118,13 @@ public partial class Main : Control
             inset.AddThemeConstantOverride("margin_right", 12);
             inset.AddThemeConstantOverride("margin_bottom", 12);
             var content = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+            var artworkPadding = new MarginContainer { MouseFilter = MouseFilterEnum.Ignore };
+            artworkPadding.AddThemeConstantOverride("margin_left", 8);
+            artworkPadding.AddThemeConstantOverride("margin_right", 8);
             var artworkViewport = new Control
             {
                 CustomMinimumSize = new Vector2(0, 148),
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
                 SizeFlagsVertical = SizeFlags.ShrinkBegin,
                 ClipContents = true,
                 MouseFilter = MouseFilterEnum.Ignore
@@ -129,12 +133,13 @@ public partial class Main : Control
             {
                 Texture = ArtworkService.Fallback,
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
-                StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCentered,
                 MouseFilter = MouseFilterEnum.Ignore
             };
             artworkViewport.AddChild(artwork);
             artwork.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-            content.AddChild(artworkViewport);
+            artworkPadding.AddChild(artworkViewport);
+            content.AddChild(artworkPadding);
             var title = new Label
             {
                 Text = presentation.Title,
