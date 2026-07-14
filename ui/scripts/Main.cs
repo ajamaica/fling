@@ -59,14 +59,25 @@ public partial class Main : Control
         _search.TextChanged += _ => RenderCards(); tools.AddChild(_search);
         _filterButton = Button($"Filter: {Filters[_filter]}  [LB/RB]", () => ChangeFilter(1)); tools.AddChild(_filterButton);
         tools.AddChild(Button("Refresh  [R]", () => _ = LoadGamesAsync()));
+        var viewportSlot = new Control
+        {
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            ClipContents = true
+        };
+        _root.AddChild(viewportSlot);
+        var viewportMargins = new MarginContainer();
+        viewportMargins.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+        viewportMargins.AddThemeConstantOverride("margin_bottom", 12);
+        viewportSlot.AddChild(viewportMargins);
         var scroll = new ScrollContainer
         {
             SizeFlagsVertical = SizeFlags.ExpandFill,
             HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
             FollowFocus = true
-        }; _root.AddChild(scroll);
+        }; viewportMargins.AddChild(scroll);
         _grid = new GridContainer { Columns = 4, SizeFlagsHorizontal = SizeFlags.ExpandFill }; _grid.AddThemeConstantOverride("h_separation", 16); _grid.AddThemeConstantOverride("v_separation", 16); scroll.AddChild(_grid);
-        _root.AddChild(new Label { Text = "A Select   B Back   X Install/Remove   LB/RB Filter   Y Refresh   Menu Settings", Modulate = new Color("aeb5bd") });
+        var footer = new Label { Text = "A Select   B Back   X Install/Remove   LB/RB Filter   Y Refresh   Menu Settings", Modulate = new Color("aeb5bd") };
+        _root.AddChild(footer);
     }
 
     private async Task LoadGamesAsync()
@@ -77,8 +88,9 @@ public partial class Main : Control
         {
             var response = await _client.GetGamesAsync(_loadCts.Token);
             if (!IsInsideTree()) return;
-            _games.Clear(); _games.AddRange(response.Games.OrderBy(g => g.Name));
-            _status.Text = $"{_games.Count} games"; RenderCards();
+            _games.Clear(); _games.AddRange(response.Games.OrderBy(g => GameCardPresentation.For(g).Title));
+            if (IsInstanceValid(_status)) _status.Text = $"{_games.Count} games";
+            RenderCards();
         }
         catch (Exception e) when (e is FlingClientException or OperationCanceledException)
         {
@@ -94,7 +106,7 @@ public partial class Main : Control
         foreach (var child in _grid.GetChildren()) child.QueueFree();
         var query = _search.Text.Trim();
         var visible = _games.Where(g => (_filter == 0 || (_filter == 1) == g.TrainerInstalled)
-            && (query.Length == 0 || g.Name.Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
+            && (query.Length == 0 || GameCardPresentation.For(g).Title.Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
         if (visible.Count == 0)
         {
             var empty = new Label { Text = _games.Count == 0 ? "No Steam games found. Check Settings for CLI status." : "No games match this search and filter." };
@@ -103,25 +115,83 @@ public partial class Main : Control
         Button? focus = null;
         foreach (var game in visible)
         {
+            var presentation = GameCardPresentation.For(game);
             var card = new Button
             {
                 CustomMinimumSize = new Vector2(270, 250),
-                Text = $"◆\n{game.Name}\n\n{(game.TrainerInstalled ? "TRAINER READY" : "NOT INSTALLED")}\nAppID {game.AppId}",
-                TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
-                TooltipText = game.Name
+                TooltipText = presentation.AccessibleText,
+                ClipContents = true
             };
+            var inset = new MarginContainer { MouseFilter = MouseFilterEnum.Ignore };
+            inset.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            inset.AddThemeConstantOverride("margin_left", 12);
+            inset.AddThemeConstantOverride("margin_top", 12);
+            inset.AddThemeConstantOverride("margin_right", 12);
+            inset.AddThemeConstantOverride("margin_bottom", 12);
+            var content = new VBoxContainer
+            {
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            var artworkViewport = new Control
+            {
+                CustomMinimumSize = new Vector2(0, 148),
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                SizeFlagsVertical = SizeFlags.ShrinkBegin,
+                ClipContents = true,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            var artwork = new TextureRect
+            {
+                Texture = ArtworkService.Fallback,
+                ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+                StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            artworkViewport.AddChild(artwork);
+            artwork.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            content.AddChild(artworkViewport);
+            var title = new Label
+            {
+                Text = presentation.Title,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                ClipText = true,
+                TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            title.AddThemeFontSizeOverride("font_size", 22); content.AddChild(title);
+            var metadata = new Label
+            {
+                Text = $"{presentation.Status}  ·  AppID {game.AppId}",
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                ClipText = true,
+                TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            content.AddChild(metadata);
+            inset.AddChild(content);
+            card.AddChild(inset);
             card.Pressed += () => ShowDetails(game); _grid.AddChild(card);
             if (game.AppId == _restoreFocusAppId) focus = card;
-            _ = SetCardArtworkHintAsync(card, game);
+            _ = SetCardArtworkHintAsync(artwork, game);
         }
         (focus ?? _grid.GetChildOrNull<Button>(0))?.CallDeferred(Control.MethodName.GrabFocus);
     }
 
-    private async Task SetCardArtworkHintAsync(Button card, SteamGame game)
+    private async Task SetCardArtworkHintAsync(TextureRect artwork, SteamGame game)
     {
-        var texture = await _artwork.FindAsync(game);
-        if (!IsInstanceValid(card) || texture is null) return;
-        card.Icon = texture; card.ExpandIcon = true;
+        try
+        {
+            var texture = await _artwork.FindAsync(game);
+            if (IsInstanceValid(artwork) && texture is not null) artwork.Texture = texture;
+        }
+        catch (Exception e)
+        {
+            // The fallback is already visible; a later library refresh retries the lookup.
+            _log.Error($"Artwork lookup failed for AppID {game.AppId}: {e.Message}");
+        }
     }
 
     private void ShowDetails(SteamGame game)
@@ -147,14 +217,16 @@ public partial class Main : Control
         try
         {
             var result = game.TrainerInstalled ? await _client.RemoveAsync(game.AppId) : await _client.InstallAsync(game.AppId);
-            _operation = TrainerOperationState.Succeeded; phase.Text = result.Message;
+            _operation = TrainerOperationState.Succeeded;
+            if (IsInstanceValid(phase)) phase.Text = result.Message;
             await LoadGamesAsync();
             var updated = _games.FirstOrDefault(g => g.AppId == game.AppId);
             if (updated is not null) ShowDetails(updated);
         }
         catch (FlingClientException e)
         {
-            _operation = TrainerOperationState.Failed; phase.Text = $"{e.Message}\nRetry with the action button. Technical detail is available in the log.";
+            _operation = TrainerOperationState.Failed;
+            if (IsInstanceValid(phase)) phase.Text = $"{e.Message}\nRetry with the action button. Technical detail is available in the log.";
             _log.Error($"Trainer operation failed: {e.Message}; {e.TechnicalDetail}");
         }
     }

@@ -10,11 +10,12 @@ public interface IArtworkProvider
 
 public sealed class ArtworkService : IArtworkProvider
 {
-    private readonly Dictionary<int, Texture2D?> _cache = new();
+    private readonly Dictionary<int, Texture2D> _cache = new();
+    public static Texture2D Fallback { get; } = CreateFallback();
 
     public Task<Texture2D?> FindAsync(SteamGame game, CancellationToken cancellationToken = default)
     {
-        if (_cache.TryGetValue(game.AppId, out var cached)) return Task.FromResult(cached);
+        if (_cache.TryGetValue(game.AppId, out var cached)) return Task.FromResult<Texture2D?>(cached);
         cancellationToken.ThrowIfCancellationRequested();
         var home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
         var candidates = new[] {
@@ -32,8 +33,25 @@ public sealed class ArtworkService : IArtworkProvider
             }
             catch { /* Artwork must never break the library. */ }
         }
+        var libraryCacheRoot = Path.Combine(home, ".local/share/Steam/appcache/librarycache");
+        var header = LocalArtworkLocator.FindHeader(libraryCacheRoot, game.AppId);
+        if (header is not null)
+        {
+            try
+            {
+                var image = Image.LoadFromFile(header);
+                if (!image.IsEmpty()) return Task.FromResult<Texture2D?>(_cache[game.AppId] = ImageTexture.CreateFromImage(image));
+            }
+            catch { /* Artwork must never break the library. */ }
+        }
+        // Do not cache a miss: Steam may still be writing its cache during a refresh.
+        return Task.FromResult<Texture2D?>(Fallback);
+    }
+
+    private static Texture2D CreateFallback()
+    {
         var gradient = new Gradient { Colors = [new Color("26323a"), new Color("182026"), new Color("4b3519")] };
-        var placeholder = new GradientTexture2D
+        return new GradientTexture2D
         {
             Gradient = gradient,
             Width = 256,
@@ -41,7 +59,5 @@ public sealed class ArtworkService : IArtworkProvider
             FillFrom = new Vector2(0, 0),
             FillTo = new Vector2(1, 1)
         };
-        _cache[game.AppId] = placeholder;
-        return Task.FromResult<Texture2D?>(placeholder);
     }
 }
