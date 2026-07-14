@@ -11,7 +11,7 @@ jobs:
         run: bash -n bin/fling install.sh uninstall.sh tests/run.sh packaging/*.sh
       - name: ShellCheck
         run: shellcheck --severity=warning bin/fling install.sh uninstall.sh tests/run.sh packaging/*.sh
-      - name: Offline CLI tests
+      - name: Offline CLI and release-installer tests
         env: { FLING_TEST_OFFLINE: "1" }
         run: tests/run.sh
       - uses: actions/setup-dotnet@v4
