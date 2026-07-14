@@ -46,6 +46,28 @@ class UiReviewRegressionTest(unittest.TestCase):
         main_source = (ROOT / "ui/scripts/Main.cs").read_text()
         self.assertIn("Texture = ArtworkService.Fallback", main_source)
 
+    def test_library_cards_bound_and_clip_artwork_above_metadata(self):
+        source = (ROOT / "ui/scripts/Main.cs").read_text()
+
+        render_cards = re.search(
+            r"private void RenderCards\(\)(.*?)\n    }\n\n    private async Task SetCardArtworkHintAsync",
+            source,
+            re.DOTALL,
+        ).group(1)
+        self.assertRegex(render_cards, r"card = new Button\s*\{(?s:.*?)ClipContents = true")
+        self.assertRegex(
+            render_cards,
+            r"artworkViewport = new (?:PanelContainer|Control)\s*\{(?s:.*?)"
+            r"CustomMinimumSize = new Vector2\(0, 148\)(?s:.*?)ClipContents = true",
+        )
+        self.assertIn(
+            "artwork.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect)", render_cards
+        )
+        self.assertLess(
+            render_cards.index("content.AddChild(artworkViewport)"),
+            render_cards.index("content.AddChild(title)"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

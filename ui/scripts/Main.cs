@@ -108,19 +108,33 @@ public partial class Main : Control
             var card = new Button
             {
                 CustomMinimumSize = new Vector2(270, 250),
-                TooltipText = presentation.AccessibleText
+                TooltipText = presentation.AccessibleText,
+                ClipContents = true
             };
+            var inset = new MarginContainer { MouseFilter = MouseFilterEnum.Ignore };
+            inset.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            inset.AddThemeConstantOverride("margin_left", 12);
+            inset.AddThemeConstantOverride("margin_top", 12);
+            inset.AddThemeConstantOverride("margin_right", 12);
+            inset.AddThemeConstantOverride("margin_bottom", 12);
             var content = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
-            content.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect, LayoutPresetMode.Minsize, 12);
+            var artworkViewport = new Control
+            {
+                CustomMinimumSize = new Vector2(0, 148),
+                SizeFlagsVertical = SizeFlags.ShrinkBegin,
+                ClipContents = true,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
             var artwork = new TextureRect
             {
                 Texture = ArtworkService.Fallback,
-                CustomMinimumSize = new Vector2(0, 148),
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
                 StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
                 MouseFilter = MouseFilterEnum.Ignore
             };
-            content.AddChild(artwork);
+            artworkViewport.AddChild(artwork);
+            artwork.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
+            content.AddChild(artworkViewport);
             var title = new Label
             {
                 Text = presentation.Title,
@@ -130,7 +144,8 @@ public partial class Main : Control
             };
             title.AddThemeFontSizeOverride("font_size", 22); content.AddChild(title);
             content.AddChild(new Label { Text = $"{presentation.Status}  ·  AppID {game.AppId}", HorizontalAlignment = HorizontalAlignment.Center, MouseFilter = MouseFilterEnum.Ignore });
-            card.AddChild(content);
+            inset.AddChild(content);
+            card.AddChild(inset);
             card.Pressed += () => ShowDetails(game); _grid.AddChild(card);
             if (game.AppId == _restoreFocusAppId) focus = card;
             _ = SetCardArtworkHintAsync(artwork, game);
