@@ -128,7 +128,11 @@ public partial class Main : Control
             inset.AddThemeConstantOverride("margin_top", 12);
             inset.AddThemeConstantOverride("margin_right", 12);
             inset.AddThemeConstantOverride("margin_bottom", 12);
-            var content = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+            var content = new VBoxContainer
+            {
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
             var artworkViewport = new Control
             {
                 CustomMinimumSize = new Vector2(0, 148),
@@ -150,12 +154,23 @@ public partial class Main : Control
             var title = new Label
             {
                 Text = presentation.Title,
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                ClipText = true,
                 TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 MouseFilter = MouseFilterEnum.Ignore
             };
             title.AddThemeFontSizeOverride("font_size", 22); content.AddChild(title);
-            content.AddChild(new Label { Text = $"{presentation.Status}  ·  AppID {game.AppId}", HorizontalAlignment = HorizontalAlignment.Center, MouseFilter = MouseFilterEnum.Ignore });
+            var metadata = new Label
+            {
+                Text = $"{presentation.Status}  ·  AppID {game.AppId}",
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                ClipText = true,
+                TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter = MouseFilterEnum.Ignore
+            };
+            content.AddChild(metadata);
             inset.AddChild(content);
             card.AddChild(inset);
             card.Pressed += () => ShowDetails(game); _grid.AddChild(card);

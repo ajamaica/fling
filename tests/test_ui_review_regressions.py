@@ -101,6 +101,36 @@ class UiReviewRegressionTest(unittest.TestCase):
             render_cards.index("content.AddChild(title)"),
         )
 
+    def test_library_card_text_stays_inside_symmetric_horizontal_insets(self):
+        source = (ROOT / "ui/scripts/Main.cs").read_text()
+
+        render_cards = re.search(
+            r"private void RenderCards\(\)(.*?)\n    }\n\n    private async Task SetCardArtworkHintAsync",
+            source,
+            re.DOTALL,
+        ).group(1)
+        self.assertIn('inset.AddThemeConstantOverride("margin_left", 12)', render_cards)
+        self.assertIn('inset.AddThemeConstantOverride("margin_right", 12)', render_cards)
+        self.assertRegex(
+            render_cards,
+            r"content = new VBoxContainer\s*\{(?s:.*?)"
+            r"SizeFlagsHorizontal = SizeFlags\.ExpandFill",
+        )
+
+        labels = re.findall(
+            r"var (?:title|metadata) = new Label\s*\{(.*?)\n\s*\};",
+            render_cards,
+            re.DOTALL,
+        )
+        self.assertEqual(2, len(labels))
+        for label in labels:
+            self.assertIn("SizeFlagsHorizontal = SizeFlags.ExpandFill", label)
+            self.assertIn("ClipText = true", label)
+            self.assertIn(
+                "TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis",
+                label,
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
