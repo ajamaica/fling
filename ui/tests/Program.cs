@@ -1,6 +1,8 @@
 using System;
+using System.IO;
 using System.Text.Json;
 using FlingUi.Models;
+using FlingUi.Scripts;
 
 static void Assert(bool condition, string message)
 {
@@ -26,4 +28,38 @@ var unnamedGame = games.Games[0] with { Name = "   " };
 var unnamedCard = GameCardPresentation.For(unnamedGame);
 Assert(unnamedCard.Title == "Unknown game (AppID 20)", "blank game name did not get a visible title fallback");
 Assert(unnamedCard.AccessibleText.Contains(unnamedCard.Title), "card accessible text omitted the fallback title");
+
+var artworkRoot = Path.Combine(Path.GetTempPath(), $"fling-artwork-tests-{Guid.NewGuid():N}");
+try
+{
+    var directCache = Path.Combine(artworkRoot, "10");
+    Directory.CreateDirectory(directCache);
+    var directHeader = Path.Combine(directCache, "library_header.jpg");
+    File.WriteAllText(directHeader, "direct");
+    Assert(LocalArtworkLocator.FindHeader(artworkRoot, 10) == directHeader, "direct library header was not found");
+
+    var nestedCache = Path.Combine(artworkRoot, "20", "a1b2c3");
+    Directory.CreateDirectory(nestedCache);
+    var nestedHeader = Path.Combine(nestedCache, "library_header.jpg");
+    File.WriteAllText(nestedHeader, "nested");
+    Assert(LocalArtworkLocator.FindHeader(artworkRoot, 20) == nestedHeader, "nested library header was not found");
+
+    Directory.CreateDirectory(Path.Combine(artworkRoot, "30"));
+    Assert(LocalArtworkLocator.FindHeader(artworkRoot, 30) is null, "missing library header did not remain a miss");
+
+    var outside = Path.Combine(artworkRoot, "outside");
+    Directory.CreateDirectory(outside);
+    File.WriteAllText(Path.Combine(outside, "library_header.jpg"), "outside");
+    Directory.CreateSymbolicLink(Path.Combine(artworkRoot, "40"), outside);
+    Assert(LocalArtworkLocator.FindHeader(artworkRoot, 40) is null, "header lookup escaped through an AppID symlink");
+
+    var linkedCache = Path.Combine(artworkRoot, "50");
+    Directory.CreateDirectory(linkedCache);
+    Directory.CreateSymbolicLink(Path.Combine(linkedCache, "linked"), outside);
+    Assert(LocalArtworkLocator.FindHeader(artworkRoot, 50) is null, "header lookup escaped through a nested symlink");
+}
+finally
+{
+    Directory.Delete(artworkRoot, recursive: true);
+}
 Console.WriteLine("Model JSON contract tests passed.");

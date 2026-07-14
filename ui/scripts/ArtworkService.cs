@@ -33,6 +33,17 @@ public sealed class ArtworkService : IArtworkProvider
             }
             catch { /* Artwork must never break the library. */ }
         }
+        var libraryCacheRoot = Path.Combine(home, ".local/share/Steam/appcache/librarycache");
+        var header = LocalArtworkLocator.FindHeader(libraryCacheRoot, game.AppId);
+        if (header is not null)
+        {
+            try
+            {
+                var image = Image.LoadFromFile(header);
+                if (!image.IsEmpty()) return Task.FromResult<Texture2D?>(_cache[game.AppId] = ImageTexture.CreateFromImage(image));
+            }
+            catch { /* Artwork must never break the library. */ }
+        }
         // Do not cache a miss: Steam may still be writing its cache during a refresh.
         return Task.FromResult<Texture2D?>(Fallback);
     }

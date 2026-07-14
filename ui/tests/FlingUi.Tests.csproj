@@ -3,5 +3,6 @@
   <ItemGroup>
     <Compile Include="../models/ApiModels.cs" Link="ApiModels.cs" />
     <Compile Include="../models/GameCardPresentation.cs" Link="GameCardPresentation.cs" />
+    <Compile Include="../scripts/LocalArtworkLocator.cs" Link="LocalArtworkLocator.cs" />
   </ItemGroup>
 </Project>
