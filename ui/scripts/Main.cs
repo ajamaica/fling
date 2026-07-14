@@ -78,7 +78,8 @@ public partial class Main : Control
             var response = await _client.GetGamesAsync(_loadCts.Token);
             if (!IsInsideTree()) return;
             _games.Clear(); _games.AddRange(response.Games.OrderBy(g => GameCardPresentation.For(g).Title));
-            _status.Text = $"{_games.Count} games"; RenderCards();
+            if (IsInstanceValid(_status)) _status.Text = $"{_games.Count} games";
+            RenderCards();
         }
         catch (Exception e) when (e is FlingClientException or OperationCanceledException)
         {
@@ -113,7 +114,7 @@ public partial class Main : Control
             content.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect, LayoutPresetMode.Minsize, 12);
             var artwork = new TextureRect
             {
-                Texture = ArtworkService.CreateFallback(),
+                Texture = ArtworkService.Fallback,
                 CustomMinimumSize = new Vector2(0, 148),
                 ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
                 StretchMode = TextureRect.StretchModeEnum.KeepAspectCovered,
@@ -174,14 +175,16 @@ public partial class Main : Control
         try
         {
             var result = game.TrainerInstalled ? await _client.RemoveAsync(game.AppId) : await _client.InstallAsync(game.AppId);
-            _operation = TrainerOperationState.Succeeded; phase.Text = result.Message;
+            _operation = TrainerOperationState.Succeeded;
+            if (IsInstanceValid(phase)) phase.Text = result.Message;
             await LoadGamesAsync();
             var updated = _games.FirstOrDefault(g => g.AppId == game.AppId);
             if (updated is not null) ShowDetails(updated);
         }
         catch (FlingClientException e)
         {
-            _operation = TrainerOperationState.Failed; phase.Text = $"{e.Message}\nRetry with the action button. Technical detail is available in the log.";
+            _operation = TrainerOperationState.Failed;
+            if (IsInstanceValid(phase)) phase.Text = $"{e.Message}\nRetry with the action button. Technical detail is available in the log.";
             _log.Error($"Trainer operation failed: {e.Message}; {e.TechnicalDetail}");
         }
     }

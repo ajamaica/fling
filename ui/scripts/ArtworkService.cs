@@ -11,6 +11,7 @@ public interface IArtworkProvider
 public sealed class ArtworkService : IArtworkProvider
 {
     private readonly Dictionary<int, Texture2D> _cache = new();
+    public static Texture2D Fallback { get; } = CreateFallback();
 
     public Task<Texture2D?> FindAsync(SteamGame game, CancellationToken cancellationToken = default)
     {
@@ -33,10 +34,10 @@ public sealed class ArtworkService : IArtworkProvider
             catch { /* Artwork must never break the library. */ }
         }
         // Do not cache a miss: Steam may still be writing its cache during a refresh.
-        return Task.FromResult<Texture2D?>(CreateFallback());
+        return Task.FromResult<Texture2D?>(Fallback);
     }
 
-    public static Texture2D CreateFallback()
+    private static Texture2D CreateFallback()
     {
         var gradient = new Gradient { Colors = [new Color("26323a"), new Color("182026"), new Color("4b3519")] };
         return new GradientTexture2D
