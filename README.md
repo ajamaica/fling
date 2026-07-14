@@ -2,7 +2,9 @@
 
 Fling UI is a fullscreen, controller-first trainer manager for Steam and Proton on Linux. It pairs a Godot 4 .NET frontend with the existing `fling` Bash CLI.
 
-> Screenshot placeholder: library grid at 1280×720, showing installed and available trainer states.
+![Fling UI library grid on a handheld](docs/images/fling-library-preview.jpg)
+
+*Fling’s controller-first library grid on a Bazzite handheld, with installed and available trainer states.*
 
 The target systems are Bazzite and Steam Gaming Mode on Steam Deck, ROG Ally, Xbox Ally, and regular Linux desktops. It does not require root and installs only below the current user's home directory.
 
