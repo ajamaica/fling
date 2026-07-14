@@ -33,20 +33,39 @@ fling refresh <appid> --json
 
 Downloads use redirect handling, HTTP failure checks, connection and total timeouts, size validation, detected-file validation, and ZIP dependency checks. A successful install writes `trainer-metadata.json` beside `Trainer.exe`, including the source URLs, SHA-256, and UTC installation time.
 
-## Prerequisites
+## Install Fling UI + CLI
+
+On an x86_64 Linux or Bazzite system, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ajamaica/fling/main/install.sh | bash
+```
+
+The bootstrap requires Bash, `curl`, GNU `tar`, `sha256sum`, `awk`, and `mktemp`. It downloads only the release archive and `SHA256SUMS` from this repository's GitHub Releases, verifies the archive before extraction, and installs as the current user below `~/.local` and `~/.config`. It never uses `sudo`. The release includes the prebuilt Godot UI, so end users do not need Godot, .NET, or a source checkout.
+
+By default, the command installs the latest stable GitHub release. Re-run it to update or repair the installation. To install a specific published tag, set `FLING_VERSION`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ajamaica/fling/main/install.sh | FLING_VERSION=v1.2.3 bash
+```
+
+After installation, reboot once or run `fling restart-steam` after closing games. The UI is available as **Fling Trainer Manager** in the desktop application menu and as `fling-ui` in a terminal.
+
+## Runtime prerequisites
 
 - Steam and Proton
 - Bash, Python 3, curl, `file`, systemd user services and `busctl`
 - `unzip` when a trainer is distributed as ZIP
 - `protontricks` for existing manual trainer execution behavior
-- For UI development: .NET 8 SDK and Godot 4.3 or newer with .NET support
 
 Optional `xdotool` and `xprop` improve Gaming Mode window tagging.
 
-## Install the CLI
+## Source-developer installation
+
+The repository checkout is not needed for the one-liner. Developers working from a clone can install just the CLI and systemd integration with:
 
 ```bash
-./install.sh
+./packaging/install-cli-from-source.sh
 ```
 
 Run `fling setup`, then reboot once or run `fling restart-steam` after closing games. Existing human-readable commands (`list`, `get`, `auto`, `run`, `setup`, `installed`, `watch`) remain available.
@@ -73,7 +92,15 @@ For example, if the Godot export path is `/tmp/fling-export/fling-ui.x86_64`, in
 ./packaging/install-ui.sh /tmp/fling-export
 ```
 
-The installer needs no root access. It copies the export under `~/.local/share/fling-ui/`, creates the launcher at `~/.local/bin/fling-ui`, and writes a desktop entry at `~/.local/share/applications/fling-ui.desktop`. It is safe to rerun after exporting an update. Install the CLI too with `./install.sh`; the UI uses that CLI for Steam discovery and trainer operations.
+The installer needs no root access. It copies the export under `~/.local/share/fling-ui/`, creates the launcher at `~/.local/bin/fling-ui`, and writes a desktop entry at `~/.local/share/applications/fling-ui.desktop`. It is safe to rerun after exporting an update. Install the CLI too with `./packaging/install-cli-from-source.sh`; the UI uses that CLI for Steam discovery and trainer operations.
+
+Release maintainers create the distributable from an already verified Linux Godot export. `SOURCE_DATE_EPOCH` may be set to the release timestamp; identical inputs and timestamps produce identical archives:
+
+```bash
+SOURCE_DATE_EPOCH=1700000000 ./packaging/package-release.sh /path/to/linux-export-directory dist
+```
+
+This writes `dist/fling-linux-x86_64.tar.gz` and `dist/SHA256SUMS`. Publish both files on the same GitHub release tag. The archive contains the CLI, user service, hardened UI installer, inner bundle installer, and prebuilt UI export.
 
 On Bazzite or another Steam Gaming Mode system, test the app in Desktop Mode first by launching **Fling Trainer Manager** from the application menu (or run `~/.local/bin/fling-ui`). To add it to Gaming Mode, open Steam in Desktop Mode, choose **Games → Add a Non-Steam Game**, browse to `~/.local/bin/fling-ui`, add it, then return to Gaming Mode.
 
@@ -106,7 +133,7 @@ The CLI suite is self-contained and never downloads or executes a real trainer:
 
 ```bash
 tests/run.sh
-bash -n bin/fling install.sh uninstall.sh packaging/*.sh
+bash -n bin/fling install.sh uninstall.sh tests/run.sh packaging/*.sh
 dotnet run --project ui/tests/FlingUi.Tests.csproj
 dotnet build ui/FlingUi.sln
 dotnet format ui/FlingUi.csproj --verify-no-changes --no-restore
