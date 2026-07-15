@@ -245,6 +245,7 @@ printf '%s' "$n" > "{attempts}"
             "FLING_WATCH_RUNNER": str(runner),
             "FLING_WATCH_MAX_ATTEMPTS": "2",
             "FLING_WATCH_RETRY_DELAY": "0",
+            "FLING_WATCH_MIN_RUNTIME": "0",
         }
         retried = subprocess.run(
             ["/bin/bash", FLING, "_watch-run", "20"], env=env,
@@ -253,6 +254,31 @@ printf '%s' "$n" > "{attempts}"
         self.assertEqual(0, retried.returncode, retried.stdout + retried.stderr)
         self.assertEqual("2", attempts.read_text())
         self.assertIn("retrying", retried.stdout)
+
+    def test_watcher_retries_a_successful_but_early_trainer_exit(self):
+        attempts = self.tmp / "early-attempts"
+        self.command("early-runner", f'''n=0
+[ ! -f "{attempts}" ] || n=$(cat "{attempts}")
+n=$((n + 1))
+printf '%s' "$n" > "{attempts}"
+exit 0
+''')
+        self.command("busctl", '''printf '%s\n' \
+  'com.steampowered.App20 123 helper user :1.2 user@1000.service - -'
+''')
+        env = self.env | {
+            "FLING_WATCH_RUNNER": str(self.bin / "early-runner"),
+            "FLING_WATCH_MAX_ATTEMPTS": "2",
+            "FLING_WATCH_RETRY_DELAY": "0",
+            "FLING_WATCH_MIN_RUNTIME": "15",
+        }
+        retried = subprocess.run(
+            ["/bin/bash", FLING, "_watch-run", "20"], env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(75, retried.returncode, retried.stdout + retried.stderr)
+        self.assertEqual("2", attempts.read_text())
+        self.assertIn("exited too soon", retried.stdout)
 
     def test_refresh_is_local_and_reports_current_state(self):
         data = self.payload(self.invoke("refresh", "20", "--json", check=True))

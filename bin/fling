@@ -748,17 +748,25 @@ app_launcher_active() {
 }
 
 run_trainer_with_retry() {
-    local appid="$1" attempt rc
+    local appid="$1" attempt rc started elapsed
     local max_attempts="${FLING_WATCH_MAX_ATTEMPTS:-3}"
     local retry_delay="${FLING_WATCH_RETRY_DELAY:-5}"
+    local min_runtime="${FLING_WATCH_MIN_RUNTIME:-15}"
     [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || max_attempts=3
     [[ "$retry_delay" =~ ^[0-9]+([.][0-9]+)?$ ]] || retry_delay=5
+    [[ "$min_runtime" =~ ^[0-9]+$ ]] || min_runtime=15
 
     for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+        started=$SECONDS
         if [ -n "${FLING_WATCH_RUNNER:-}" ]; then
             if "$FLING_WATCH_RUNNER" "$appid"; then rc=0; else rc=$?; fi
         else
             if "$0" run "$appid" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+        fi
+        elapsed=$((SECONDS - started))
+        if (( rc == 0 && elapsed < min_runtime )) && app_launcher_active "$appid"; then
+            echo "trainer $appid exited too soon (${elapsed}s < ${min_runtime}s) while game is active"
+            rc=75
         fi
         echo "trainer $appid exited (status $rc, attempt $attempt/$max_attempts)"
         [ "$rc" -eq 0 ] && return 0
