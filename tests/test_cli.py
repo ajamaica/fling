@@ -159,6 +159,41 @@ exec /usr/bin/grep "$@"
             1, still_waiting.returncode, still_waiting.stdout + still_waiting.stderr
         )
 
+        helper = proc / "104"
+        helper.mkdir()
+        (helper / "environ").write_bytes(
+            b"STEAM_COMPAT_APP_ID=20\0WINEPREFIX=/prefix\0"
+        )
+        (helper / "cmdline").write_bytes(
+            b"S:\\common\\Space Game\\__Installer\\cleanup.exe\0"
+        )
+        helper_waiting = subprocess.run(
+            ["/bin/bash", FLING, "_game-ready", "20"], env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(
+            1, helper_waiting.returncode,
+            helper_waiting.stdout + helper_waiting.stderr,
+        )
+
+        wrapper = proc / "103"
+        wrapper.mkdir()
+        (wrapper / "environ").write_bytes(
+            b"STEAM_COMPAT_APP_ID=20\0WINEPREFIX=/prefix\0"
+        )
+        (wrapper / "cmdline").write_bytes(
+            b"python3\0/proton/wrapper.py\0"
+            b"S:\\common\\Space Game\\Binaries\\Win64\\SpaceGame.exe\0"
+        )
+        wrapper_waiting = subprocess.run(
+            ["/bin/bash", FLING, "_game-ready", "20"], env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(
+            1, wrapper_waiting.returncode,
+            wrapper_waiting.stdout + wrapper_waiting.stderr,
+        )
+
         game = proc / "202"
         game.mkdir()
         (game / "environ").write_bytes(b"STEAM_COMPAT_APP_ID=20\0WINEPREFIX=/prefix\0")
@@ -169,13 +204,52 @@ exec /usr/bin/grep "$@"
                                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.assertEqual(0, ready.returncode, ready.stdout + ready.stderr)
 
+    def test_game_ready_reports_unavailable_detection_separately(self):
+        proc = self.tmp / "empty-proc"
+        proc.mkdir()
+        env = self.env | {"FLING_PROC_ROOT": str(proc)}
+        unavailable = subprocess.run(
+            ["/bin/bash", FLING, "_game-ready", "999"], env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(
+            2, unavailable.returncode,
+            unavailable.stdout + unavailable.stderr,
+        )
+
     def test_watcher_uses_process_readiness_instead_of_a_global_delay(self):
         source = FLING.read_text()
         watch = source[source.index("cmd_watch() {"):source.index("cmd_installed() {")]
         self.assertNotIn("sleep 10", watch)
         self.assertIn('game_process_ready "$svc"', watch)
         self.assertLess(watch.index('game_process_ready "$svc"'),
-                        watch.index('seen[$key]=launched'))
+                        watch.index('seen[$key]=in-flight'))
+
+    def test_watcher_retries_a_failed_direct_launch_while_service_is_active(self):
+        attempts = self.tmp / "attempts"
+        self.command("trainer-runner", f'''n=0
+[ ! -f "{attempts}" ] || n=$(cat "{attempts}")
+n=$((n + 1))
+printf '%s' "$n" > "{attempts}"
+[ "$n" -ge 2 ]
+''')
+        runner = self.bin / "trainer-runner"
+        self.command("busctl", '''printf '%s\n' \
+  'com.steampowered.App20 123 helper user :1.2 user@1000.service - -' \
+  'com.steampowered.App20.Instance123 123 helper user :1.2 user@1000.service - -'
+''')
+        env = self.env | {
+            "FLING_WATCH_RUNNER": str(runner),
+            "FLING_WATCH_MAX_ATTEMPTS": "2",
+            "FLING_WATCH_RETRY_DELAY": "0",
+        }
+        retried = subprocess.run(
+            ["/bin/bash", FLING, "_watch-run", "20"], env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(0, retried.returncode, retried.stdout + retried.stderr)
+        self.assertEqual("2", attempts.read_text())
+        self.assertIn("retrying", retried.stdout)
 
     def test_refresh_is_local_and_reports_current_state(self):
         data = self.payload(self.invoke("refresh", "20", "--json", check=True))

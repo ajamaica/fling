@@ -696,13 +696,13 @@ for library in libraries:
             break
 
 if not install_dir:
-    raise SystemExit(1)
+    raise SystemExit(2)
 needle = "/" + install_dir.replace("\\", "/").strip("/").casefold() + "/"
 
 try:
     processes = proc.iterdir()
 except OSError:
-    raise SystemExit(1)
+    raise SystemExit(2)
 
 for process in processes:
     if not process.name.isdigit():
@@ -711,15 +711,27 @@ for process in processes:
         environment = process.joinpath("environ").read_bytes().split(b"\0")
         if f"STEAM_COMPAT_APP_ID={appid}".encode() not in environment:
             continue
-        command = process.joinpath("cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        command_line = process.joinpath("cmdline").read_bytes().split(b"\0")
+        executable = command_line[0].decode(errors="replace") if command_line else ""
     except OSError:
         continue
-    normalized = command.replace("\\", "/").casefold()
-    installers = (
+    normalized = executable.replace("\\", "/").casefold()
+    helper_dirs = (
         "/_commonredist/", "/redist/", "/redistributable/",
-        " /installscript ", "eappinstaller.exe", "steamservice.exe",
+        "/__installer/", "/installer/", "/installers/",
+        "/prerequisites/", "/prereqs/", "/supportsoftware/",
+        "/easyanticheat/", "/anticheat/",
     )
-    if any(marker in normalized for marker in installers):
+    helper_names = (
+        "cleanup.exe", "crashpad_handler.exe", "crashreportclient.exe",
+        "dxsetup.exe", "eappinstaller.exe", "eac_launcher.exe",
+        "installer.exe", "setup.exe", "steamservice.exe", "updater.exe",
+        "unitycrashhandler32.exe", "unitycrashhandler64.exe",
+    )
+    executable_name = pathlib.PurePosixPath(normalized).name
+    if (any(marker in normalized for marker in helper_dirs)
+            or executable_name in helper_names
+            or executable_name.startswith(("unins", "vc_redist", "easyanticheat"))):
         continue
     if needle in normalized and ".exe" in normalized:
         raise SystemExit(0)
@@ -727,17 +739,50 @@ raise SystemExit(1)
 PY
 }
 
+app_launcher_active() {
+    local appid="$1"
+    busctl --user list --no-legend 2>/dev/null \
+        | grep -qE "com\\.steampowered\\.App${appid}([[:space:]]|\\.Instance)"
+}
+
+run_trainer_with_retry() {
+    local appid="$1" attempt rc
+    local max_attempts="${FLING_WATCH_MAX_ATTEMPTS:-3}"
+    local retry_delay="${FLING_WATCH_RETRY_DELAY:-5}"
+    [[ "$max_attempts" =~ ^[1-9][0-9]*$ ]] || max_attempts=3
+    [[ "$retry_delay" =~ ^[0-9]+([.][0-9]+)?$ ]] || retry_delay=5
+
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+        if [ -n "${FLING_WATCH_RUNNER:-}" ]; then
+            if "$FLING_WATCH_RUNNER" "$appid"; then rc=0; else rc=$?; fi
+        else
+            if "$0" run "$appid" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+        fi
+        echo "trainer $appid exited (status $rc, attempt $attempt/$max_attempts)"
+        [ "$rc" -eq 0 ] && return 0
+        [ "$attempt" -lt "$max_attempts" ] || return "$rc"
+        if ! app_launcher_active "$appid"; then
+            echo "trainer $appid will not retry — game launcher service ended"
+            return "$rc"
+        fi
+        echo "trainer $appid failed — retrying in ${retry_delay}s"
+        sleep "$retry_delay"
+    done
+}
+
 # daemon: auto-launch trainers when a game with an installed trainer starts.
 # A game "starts" when its launcher service appears on the session bus, which
 # requires launch options: STEAM_COMPAT_LAUNCHER_SERVICE=proton %command%
 cmd_watch() {
-    declare -A seen waiting
+    declare -A seen waiting unavailable
+    local detection_failure_limit="${FLING_WATCH_DETECTION_FAILURE_LIMIT:-6}"
+    [[ "$detection_failure_limit" =~ ^[1-9][0-9]*$ ]] || detection_failure_limit=6
     echo "fling watch: polling for game launcher services..."
     while true; do
         while read -r svc; do
             [ -n "$svc" ] || continue
             inst=$(busctl --user list --no-legend 2>/dev/null \
-                   | grep -oP "com\.steampowered\.App$svc\.Instance\K[0-9]+" | head -1)
+                   | grep -oP "com\.steampowered\.App$svc\.Instance\K[0-9]+" | head -1 || true)
             key="$svc:${inst:-0}"
             [ -n "${seen[$key]:-}" ] && continue
             dir=$(trainer_dir_for_game "$svc" "" 1 2>/dev/null || true)
@@ -746,16 +791,29 @@ cmd_watch() {
             if pgrep -f "Trainers/$svc - .*Trainer\.exe" >/dev/null 2>&1; then
                 seen[$key]=already-running; continue
             fi
-            if ! game_process_ready "$svc"; then
-                if [ -z "${waiting[$key]:-}" ]; then
-                    echo "game $svc launcher detected — waiting for game process"
-                    waiting[$key]=1
+            ready_rc=0
+            ready_message="process ready"
+            game_process_ready "$svc" || ready_rc=$?
+            if [ "$ready_rc" -ne 0 ]; then
+                if [ "$ready_rc" -eq 1 ]; then
+                    if [ -z "${waiting[$key]:-}" ]; then
+                        echo "game $svc launcher detected — waiting for game process"
+                        waiting[$key]=1
+                    fi
+                    continue
                 fi
-                continue
+                unavailable[$key]=$(( ${unavailable[$key]:-0} + 1 ))
+                if [ "${unavailable[$key]}" -lt "$detection_failure_limit" ]; then
+                    if [ "${unavailable[$key]}" -eq 1 ]; then
+                        echo "game $svc readiness detection unavailable — retrying"
+                    fi
+                    continue
+                fi
+                echo "game $svc readiness unavailable after $detection_failure_limit checks — launching with fallback"
+                ready_message="fallback readiness"
             fi
-            unset 'waiting[$key]'
-            seen[$key]=launched
-            echo "game $svc process ready — auto-launching trainer"
+            unset 'waiting[$key]' 'unavailable[$key]'
+            echo "game $svc $ready_message — auto-launching trainer"
             # borrow session env from steam for display/steam-url handling
             spid=$(pgrep -x steam | head -1 || true)
             if [ -n "$spid" ]; then
@@ -766,16 +824,13 @@ cmd_watch() {
             # prefer launching via the trainer's Steam shortcut (switchable app
             # in Gaming Mode); fall back to direct injection
             if gid=$(shortcut_gameid "$svc"); then
+                seen[$key]=launched
                 echo "launching via Steam shortcut (gameid $gid)"
                 steam "steam://rungameid/$gid" >/dev/null 2>&1 &
             else
+                seen[$key]=in-flight
                 echo "no Steam shortcut found — direct injection"
-                (
-                    set +e
-                    "$0" run "$svc" >/dev/null 2>&1
-                    rc=$?
-                    echo "trainer $svc exited (status $rc)"
-                ) &
+                run_trainer_with_retry "$svc" &
             fi
         done < <(busctl --user list --no-legend 2>/dev/null \
                  | grep -oP 'com\.steampowered\.App\K[0-9]+' | sort -u)
@@ -805,5 +860,6 @@ case "${1:-}" in
     installed) if [ "${2:-}" = "--json" ]; then json_local_api installed; else cmd_installed; fi ;;
     watch)     cmd_watch ;;
     _game-ready) [ $# -eq 2 ] || exit 2; game_process_ready "$2" ;;
+    _watch-run) [ $# -eq 2 ] || exit 2; run_trainer_with_retry "$2" ;;
     *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
