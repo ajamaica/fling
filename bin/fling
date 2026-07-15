@@ -666,6 +666,8 @@ game_process_ready() {
 import pathlib, re, sys
 
 appid, steam_s, proc_s = sys.argv[1:]
+if not appid.isdigit():
+    raise SystemExit(2)
 steam, proc = pathlib.Path(steam_s), pathlib.Path(proc_s)
 
 def values(text):
@@ -700,7 +702,7 @@ if not install_dir:
 needle = "/" + install_dir.replace("\\", "/").strip("/").casefold() + "/"
 
 try:
-    processes = proc.iterdir()
+    processes = list(proc.iterdir())
 except OSError:
     raise SystemExit(2)
 
@@ -774,16 +776,21 @@ run_trainer_with_retry() {
 # A game "starts" when its launcher service appears on the session bus, which
 # requires launch options: STEAM_COMPAT_LAUNCHER_SERVICE=proton %command%
 cmd_watch() {
-    declare -A seen waiting unavailable
+    declare -A seen waiting unavailable active
     local detection_failure_limit="${FLING_WATCH_DETECTION_FAILURE_LIMIT:-6}"
     [[ "$detection_failure_limit" =~ ^[1-9][0-9]*$ ]] || detection_failure_limit=6
     echo "fling watch: polling for game launcher services..."
     while true; do
+        active=()
         while read -r svc; do
             [ -n "$svc" ] || continue
             inst=$(busctl --user list --no-legend 2>/dev/null \
                    | grep -oP "com\.steampowered\.App$svc\.Instance\K[0-9]+" | head -1 || true)
-            key="$svc:${inst:-0}"
+            base_pid=$(busctl --user list --no-legend 2>/dev/null \
+                       | grep -E "^com\.steampowered\.App$svc[[:space:]]" \
+                       | tr -s ' ' | cut -d' ' -f2 | head -1 || true)
+            key="$svc:${inst:-${base_pid:-0}}"
+            active[$key]=1
             [ -n "${seen[$key]:-}" ] && continue
             dir=$(trainer_dir_for_game "$svc" "" 1 2>/dev/null || true)
             [ -n "$dir" ] || { seen[$key]=skip; continue; }
@@ -834,6 +841,15 @@ cmd_watch() {
             fi
         done < <(busctl --user list --no-legend 2>/dev/null \
                  | grep -oP 'com\.steampowered\.App\K[0-9]+' | sort -u)
+        for key in "${!seen[@]}"; do
+            [ -n "${active[$key]:-}" ] || unset 'seen[$key]'
+        done
+        for key in "${!waiting[@]}"; do
+            [ -n "${active[$key]:-}" ] || unset 'waiting[$key]'
+        done
+        for key in "${!unavailable[@]}"; do
+            [ -n "${active[$key]:-}" ] || unset 'unavailable[$key]'
+        done
         sleep "${FLING_WATCH_POLL_INTERVAL:-5}"
     done
 }

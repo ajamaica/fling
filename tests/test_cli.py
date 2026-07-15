@@ -224,6 +224,9 @@ exec /usr/bin/grep "$@"
         self.assertIn('game_process_ready "$svc"', watch)
         self.assertLess(watch.index('game_process_ready "$svc"'),
                         watch.index('seen[$key]=in-flight'))
+        self.assertIn('active[$key]=1', watch)
+        self.assertIn("unset 'seen[$key]'", watch)
+        self.assertIn("unset 'waiting[$key]'", watch)
 
     def test_watcher_retries_a_failed_direct_launch_while_service_is_active(self):
         attempts = self.tmp / "attempts"
