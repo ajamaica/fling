@@ -129,6 +129,54 @@ exec /usr/bin/grep "$@"
                     "steam_root", "trainers_directory"}
         self.assertEqual(expected, set(data))
 
+    def test_game_ready_waits_for_installed_game_process_after_secondary_launcher(self):
+        proc = self.tmp / "proc"
+        launcher = proc / "101"
+        launcher.mkdir(parents=True)
+        (launcher / "environ").write_bytes(b"STEAM_COMPAT_APP_ID=20\0WINEPREFIX=/prefix\0")
+        (launcher / "cmdline").write_bytes(
+            b"C:\\Program Files\\Electronic Arts\\EA Desktop\\EADesktop.exe\0-silent\0"
+        )
+        env = self.env | {"FLING_PROC_ROOT": str(proc)}
+
+        waiting = subprocess.run(["/bin/bash", FLING, "_game-ready", "20"], env=env,
+                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(1, waiting.returncode, waiting.stdout + waiting.stderr)
+
+        installer = proc / "102"
+        installer.mkdir()
+        (installer / "environ").write_bytes(
+            b"STEAM_COMPAT_APP_ID=20\0WINEPREFIX=/prefix\0"
+        )
+        (installer / "cmdline").write_bytes(
+            b"S:\\common\\Space Game\\_CommonRedist\\EAappInstaller.exe\0"
+        )
+        still_waiting = subprocess.run(
+            ["/bin/bash", FLING, "_game-ready", "20"], env=env,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(
+            1, still_waiting.returncode, still_waiting.stdout + still_waiting.stderr
+        )
+
+        game = proc / "202"
+        game.mkdir()
+        (game / "environ").write_bytes(b"STEAM_COMPAT_APP_ID=20\0WINEPREFIX=/prefix\0")
+        (game / "cmdline").write_bytes(
+            b"S:\\common\\Space Game\\Binaries\\Win64\\SpaceGame.exe\0"
+        )
+        ready = subprocess.run(["/bin/bash", FLING, "_game-ready", "20"], env=env,
+                               text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(0, ready.returncode, ready.stdout + ready.stderr)
+
+    def test_watcher_uses_process_readiness_instead_of_a_global_delay(self):
+        source = FLING.read_text()
+        watch = source[source.index("cmd_watch() {"):source.index("cmd_installed() {")]
+        self.assertNotIn("sleep 10", watch)
+        self.assertIn('game_process_ready "$svc"', watch)
+        self.assertLess(watch.index('game_process_ready "$svc"'),
+                        watch.index('seen[$key]=launched'))
+
     def test_refresh_is_local_and_reports_current_state(self):
         data = self.payload(self.invoke("refresh", "20", "--json", check=True))
         self.assertTrue(data["success"]); self.assertEqual("refresh", data["operation"])

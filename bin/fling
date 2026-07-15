@@ -657,11 +657,81 @@ sys.exit(1)
 PY
 }
 
+# Return success once a Windows process for this app references the installed
+# game directory. Secondary launchers create the app service first, so service
+# availability alone is not proof that the real game is ready.
+game_process_ready() {
+    local appid="$1"
+    python3 - "$appid" "$STEAM_ROOT" "${FLING_PROC_ROOT:-/proc}" <<'PY'
+import pathlib, re, sys
+
+appid, steam_s, proc_s = sys.argv[1:]
+steam, proc = pathlib.Path(steam_s), pathlib.Path(proc_s)
+
+def values(text):
+    def unescape(value):
+        return re.sub(r'\\(["\\])', r'\1', value)
+    return [(unescape(k), unescape(v))
+            for k, v in re.findall(r'"((?:\\.|[^"\\])*)"\s*"((?:\\.|[^"\\])*)"', text)]
+
+libraries = [steam]
+try:
+    for key, value in values((steam / "steamapps/libraryfolders.vdf").read_text(errors="replace")):
+        path = pathlib.Path(value)
+        if key == "path" and path not in libraries:
+            libraries.append(path)
+except OSError:
+    pass
+
+install_dir = ""
+for library in libraries:
+    manifest = library / "steamapps" / f"appmanifest_{appid}.acf"
+    try:
+        fields = dict(values(manifest.read_text(errors="replace")))
+    except OSError:
+        continue
+    if fields.get("appid") == appid:
+        install_dir = fields.get("installdir", "")
+        if install_dir:
+            break
+
+if not install_dir:
+    raise SystemExit(1)
+needle = "/" + install_dir.replace("\\", "/").strip("/").casefold() + "/"
+
+try:
+    processes = proc.iterdir()
+except OSError:
+    raise SystemExit(1)
+
+for process in processes:
+    if not process.name.isdigit():
+        continue
+    try:
+        environment = process.joinpath("environ").read_bytes().split(b"\0")
+        if f"STEAM_COMPAT_APP_ID={appid}".encode() not in environment:
+            continue
+        command = process.joinpath("cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:
+        continue
+    normalized = command.replace("\\", "/").casefold()
+    installers = (
+        "/_commonredist/", "/redist/", "/redistributable/",
+        " /installscript ", "eappinstaller.exe", "steamservice.exe",
+    )
+    if any(marker in normalized for marker in installers):
+        continue
+    if needle in normalized and ".exe" in normalized:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
 # daemon: auto-launch trainers when a game with an installed trainer starts.
 # A game "starts" when its launcher service appears on the session bus, which
 # requires launch options: STEAM_COMPAT_LAUNCHER_SERVICE=proton %command%
 cmd_watch() {
-    declare -A seen
+    declare -A seen waiting
     echo "fling watch: polling for game launcher services..."
     while true; do
         while read -r svc; do
@@ -676,8 +746,16 @@ cmd_watch() {
             if pgrep -f "Trainers/$svc - .*Trainer\.exe" >/dev/null 2>&1; then
                 seen[$key]=already-running; continue
             fi
+            if ! game_process_ready "$svc"; then
+                if [ -z "${waiting[$key]:-}" ]; then
+                    echo "game $svc launcher detected — waiting for game process"
+                    waiting[$key]=1
+                fi
+                continue
+            fi
+            unset 'waiting[$key]'
             seen[$key]=launched
-            echo "game $svc started — auto-launching trainer"
+            echo "game $svc process ready — auto-launching trainer"
             # borrow session env from steam for display/steam-url handling
             spid=$(pgrep -x steam | head -1 || true)
             if [ -n "$spid" ]; then
@@ -685,7 +763,6 @@ cmd_watch() {
                     case "$k" in DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS) export "$k=$v";; esac
                 done < <(tr '\0' '\n' < "/proc/$spid/environ")
             fi
-            sleep 10   # let the game window come up first
             # prefer launching via the trainer's Steam shortcut (switchable app
             # in Gaming Mode); fall back to direct injection
             if gid=$(shortcut_gameid "$svc"); then
@@ -693,11 +770,16 @@ cmd_watch() {
                 steam "steam://rungameid/$gid" >/dev/null 2>&1 &
             else
                 echo "no Steam shortcut found — direct injection"
-                "$0" run "$svc" >/dev/null 2>&1 &
+                (
+                    set +e
+                    "$0" run "$svc" >/dev/null 2>&1
+                    rc=$?
+                    echo "trainer $svc exited (status $rc)"
+                ) &
             fi
         done < <(busctl --user list --no-legend 2>/dev/null \
                  | grep -oP 'com\.steampowered\.App\K[0-9]+' | sort -u)
-        sleep 5
+        sleep "${FLING_WATCH_POLL_INTERVAL:-5}"
     done
 }
 
@@ -722,5 +804,6 @@ case "${1:-}" in
     _lo-edit)  lo_edit "$2" "$3" "$4" ;;
     installed) if [ "${2:-}" = "--json" ]; then json_local_api installed; else cmd_installed; fi ;;
     watch)     cmd_watch ;;
+    _game-ready) [ $# -eq 2 ] || exit 2; game_process_ready "$2" ;;
     *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
