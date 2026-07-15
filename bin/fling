@@ -787,7 +787,7 @@ cmd_watch() {
             inst=$(busctl --user list --no-legend 2>/dev/null \
                    | grep -oP "com\.steampowered\.App$svc\.Instance\K[0-9]+" | head -1 || true)
             base_pid=$(busctl --user list --no-legend 2>/dev/null \
-                       | grep -E "^com\.steampowered\.App$svc[[:space:]]" \
+                       | grep -E "^com\.steampowered\.App${svc}[[:space:]]" \
                        | tr -s ' ' | cut -d' ' -f2 | head -1 || true)
             key="$svc:${inst:-${base_pid:-0}}"
             active[$key]=1
