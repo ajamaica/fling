@@ -7,6 +7,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class UiReviewRegressionTest(unittest.TestCase):
+    def test_install_timeout_covers_trainer_and_runtime_download_budgets(self):
+        source = (ROOT / "ui/scripts/FlingClient.cs").read_text()
+        self.assertIn("InstallTimeout = TimeSpan.FromMinutes(10)", source)
+        self.assertIn("catch (OperationCanceledException)", source)
+        self.assertIn("process.Kill(true)", source)
+        self.assertIn("WaitForExitAsync(CancellationToken.None)", source)
+        self.assertIn("if (ct.IsCancellationRequested) throw", source)
+
     def test_library_scroll_viewport_reserves_footer_clearance(self):
         source = (ROOT / "ui/scripts/Main.cs").read_text()
 

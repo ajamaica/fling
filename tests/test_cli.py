@@ -297,6 +297,65 @@ exit 0
         data = self.payload(self.invoke("remove", "10", "--json", check=True))
         self.assertTrue(data["success"]); self.assertFalse(one.exists()); self.assertTrue(two.exists())
 
+    def test_pragmata_remove_deletes_only_verified_managed_runtime(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        trainer = self.home / "Trainers/3357650 - PRAGMATA/Trainer.exe"
+        trainer.parent.mkdir(parents=True); trainer.write_bytes(b"MZ trainer")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        dll = b"MZ managed runtime"
+        (game / "dinput8.dll").write_bytes(dll)
+        (game / ".fling-reframework.json").write_text(json.dumps({
+            "appid": 3357650, "component": "REFramework", "installed_file": "dinput8.dll",
+            "sha256": hashlib.sha256(dll).hexdigest(),
+        }))
+
+        data = self.payload(self.invoke("remove", "3357650", "--json", check=True))
+
+        self.assertTrue(data["success"])
+        self.assertFalse(trainer.parent.exists())
+        self.assertFalse((game / "dinput8.dll").exists())
+        self.assertFalse((game / ".fling-reframework.json").exists())
+
+    def test_pragmata_remove_preserves_externally_changed_runtime_and_trainer(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        trainer = self.home / "Trainers/3357650 - PRAGMATA/Trainer.exe"
+        trainer.parent.mkdir(parents=True); trainer.write_bytes(b"MZ trainer")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        original = b"MZ original runtime"
+        changed = b"MZ externally changed runtime"
+        (game / "dinput8.dll").write_bytes(changed)
+        (game / ".fling-reframework.json").write_text(json.dumps({
+            "appid": 3357650, "component": "REFramework", "installed_file": "dinput8.dll",
+            "sha256": hashlib.sha256(original).hexdigest(),
+        }))
+
+        result = self.invoke("remove", "3357650", "--json")
+
+        self.assertEqual(12, result.returncode)
+        self.assertEqual("runtime_support_conflict", self.payload(result)["error_code"])
+        self.assertTrue(trainer.exists())
+        self.assertEqual(changed, (game / "dinput8.dll").read_bytes())
+
+    def test_pragmata_remove_finishes_interrupted_runtime_cleanup(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        trainer = self.home / "Trainers/3357650 - PRAGMATA/Trainer.exe"
+        trainer.parent.mkdir(parents=True); trainer.write_bytes(b"MZ trainer")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        dll_tomb = game / ".fling-remove-dinput8.dll"
+        metadata_tomb = game / ".fling-remove-reframework.json"
+        dll_tomb.write_bytes(b"MZ quarantined runtime")
+        metadata_tomb.write_text("{}")
+
+        data = self.payload(self.invoke("remove", "3357650", "--json", check=True))
+
+        self.assertTrue(data["success"])
+        self.assertFalse(trainer.parent.exists())
+        self.assertFalse(dll_tomb.exists())
+        self.assertFalse(metadata_tomb.exists())
+
     def test_remove_missing_and_invalid_args_have_stable_exits(self):
         p = self.invoke("remove", "abc", "--json"); self.assertEqual(2, p.returncode); self.assertFalse(self.payload(p)["success"]); self.assertEqual(0, self.payload(p)["appid"])
         p = self.invoke("remove", "999", "--json"); self.assertEqual(3, p.returncode); self.assertEqual(999, self.payload(p)["appid"])
@@ -360,6 +419,7 @@ cp "{archive}" "$out"
         calls = curl_log.read_text()
         self.assertIn("praydog/REFramework-nightly/releases/download/nightly-01391", calls)
         self.assertIn("--proto =https", calls)
+        self.assertIn("--max-filesize 67108864", calls)
 
     def test_reframework_refuses_to_overwrite_unmanaged_dinput8(self):
         self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
@@ -381,6 +441,29 @@ cp "{archive}" "$out"
         self.assertNotEqual(0, refused.returncode)
         self.assertIn("unmanaged dinput8.dll", (refused.stdout + refused.stderr).lower())
         self.assertEqual(b"unmanaged mod loader", original.read_bytes())
+        self.assertFalse((game / ".fling-reframework.json").exists())
+
+    def test_reframework_refuses_identical_unmanaged_dinput8(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        dll = b"MZ same official bytes"
+        original = game / "dinput8.dll"
+        original.write_bytes(dll)
+        archive = self.tmp / "same-reframework.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dinput8.dll", dll)
+        self.allow_test_reframework_archive(archive)
+        self.command("curl", f'''out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+cp "{archive}" "$out"
+''')
+
+        refused = self.invoke("_install-reframework", "3357650")
+
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("unmanaged dinput8.dll", (refused.stdout + refused.stderr).lower())
+        self.assertEqual(dll, original.read_bytes())
         self.assertFalse((game / ".fling-reframework.json").exists())
 
     def test_reframework_rejects_archive_checksum_mismatch(self):
@@ -453,6 +536,19 @@ cp "{archive}" "$out"
         self.assertNotEqual(0, refused.returncode)
         self.assertIn("not found safely", (refused.stdout + refused.stderr).lower())
         self.assertFalse((outside / "dinput8.dll").exists())
+
+    def test_reframework_rejects_symlinked_manifest_game_directory(self):
+        common = self.lib2 / "steamapps/common"
+        real_game = common / "RealPRAGMATA"
+        real_game.mkdir(parents=True)
+        (common / "PRAGMATA").symlink_to(real_game, target_is_directory=True)
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+
+        refused = self.invoke("_install-reframework", "3357650")
+
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("not found safely", (refused.stdout + refused.stderr).lower())
+        self.assertFalse((real_game / "dinput8.dll").exists())
 
     def test_pragmata_public_installs_apply_runtime_support(self):
         source = FLING.read_text()

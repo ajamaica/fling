@@ -309,8 +309,16 @@ for library in libraries:
         continue
     if fields.get("appid") != appid or not fields.get("installdir"):
         continue
-    common = (library / "steamapps/common").resolve(strict=True)
-    game = (common / fields["installdir"]).resolve(strict=True)
+    common = (library / "steamapps" / "common").resolve(strict=True)
+    relative = pathlib.PurePath(fields["installdir"])
+    if relative.is_absolute() or any(part in ("", ".", "..") for part in relative.parts):
+        raise SystemExit(3)
+    candidate = common
+    for part in relative.parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            raise SystemExit(3)
+    game = candidate.resolve(strict=True)
     if not game.is_dir() or game == common or common not in game.parents:
         raise SystemExit(3)
     info = game.stat()
@@ -320,7 +328,7 @@ raise SystemExit(3)
 PY
 }
 
-install_reframework() {
+install_reframework() (
     local appid="$1" game_info game_dir game_dev game_ino archive expected_sha
     [ "$appid" = 3357650 ] \
         || { echo "ERROR: REFramework automation is not enabled for app $appid" >&2; return 1; }
@@ -331,16 +339,21 @@ install_reframework() {
         || { echo "ERROR: installed game identity was not resolved safely" >&2; return 1; }
     archive=$(mktemp "${TMPDIR:-/tmp}/fling-reframework.XXXXXX") \
         || { echo "ERROR: could not create REFramework temporary file" >&2; return 1; }
+    trap 'rm -f -- "$archive"' EXIT HUP INT TERM
     expected_sha="10792e2b1141c4c0e135141da5d92b281a334cea0ff9fcc3f3e482cf2df8d00f"
     if [ "${FLING_TESTING:-}" = 1 ] && [[ "${FLING_REFRAMEWORK_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
         expected_sha="$FLING_REFRAMEWORK_SHA256"
     fi
     if ! curl --silent --show-error --fail --location --proto '=https' \
-        --connect-timeout 15 --max-time 240 \
+        --connect-timeout 15 --max-time 240 --max-filesize 67108864 \
         'https://github.com/praydog/REFramework-nightly/releases/download/nightly-01391-a0e9010fb0449dc9d824b5978ee759eeaf50f7c6/REFramework.zip' \
         -o "$archive"; then
         rm -f "$archive"
         echo "ERROR: REFramework download failed" >&2
+        return 1
+    fi
+    if [ "$(wc -c < "$archive")" -gt 67108864 ]; then
+        echo "ERROR: REFramework archive exceeds the 64 MiB limit" >&2
         return 1
     fi
     if ! zip_archive_is_safe "$archive"; then
@@ -436,8 +449,7 @@ try:
                     or (metadata.get("sha256") != current_digest and current_digest != digest)):
                 raise ValueError("existing dinput8.dll changed outside Fling; refusing overwrite")
         except FileNotFoundError:
-            if current_digest != digest:
-                raise ValueError("unmanaged dinput8.dll already exists; refusing overwrite")
+            raise ValueError("unmanaged dinput8.dll already exists; refusing overwrite")
     except FileNotFoundError:
         pass
 
@@ -451,21 +463,26 @@ try:
         "sha256": digest,
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
     }
-    dll_fd, dll_tmp = create_temp_at(directory_fd, ".dinput8.dll.fling-")
-    meta_fd, meta_tmp = create_temp_at(directory_fd, ".fling-reframework-")
-    rollback_fd, rollback_tmp = create_temp_at(directory_fd, ".dinput8.dll.rollback-")
+    dll_fd = meta_fd = rollback_fd = None
+    dll_tmp = meta_tmp = rollback_tmp = None
     try:
+        dll_fd, dll_tmp = create_temp_at(directory_fd, ".dinput8.dll.fling-")
+        meta_fd, meta_tmp = create_temp_at(directory_fd, ".fling-reframework-")
+        rollback_fd, rollback_tmp = create_temp_at(directory_fd, ".dinput8.dll.rollback-")
         with os.fdopen(dll_fd, "wb") as stream:
             stream.write(dll)
             stream.flush(); os.fsync(stream.fileno())
+        dll_fd = None
         with os.fdopen(meta_fd, "w") as stream:
             json.dump(metadata, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
             stream.flush(); os.fsync(stream.fileno())
+        meta_fd = None
         with os.fdopen(rollback_fd, "wb") as stream:
             if old_bytes is not None:
                 stream.write(old_bytes)
             stream.flush(); os.fsync(stream.fileno())
+        rollback_fd = None
         os.replace(meta_tmp, pending_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
         os.fsync(directory_fd)
         os.replace(dll_tmp, target_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
@@ -482,7 +499,12 @@ try:
             except FileNotFoundError: pass
             raise
     finally:
+        for fd in (dll_fd, meta_fd, rollback_fd):
+            if fd is None: continue
+            try: os.close(fd)
+            except OSError: pass
         for name in (dll_tmp, meta_tmp, rollback_tmp):
+            if name is None: continue
             try: os.unlink(name, dir_fd=directory_fd)
             except FileNotFoundError: pass
         os.close(directory_fd)
@@ -496,7 +518,8 @@ PY
         return 1
     fi
     rm -f "$archive"
-}
+    archive=""
+)
 
 install_runtime_support() {
     local appid="$1"
@@ -506,6 +529,127 @@ install_runtime_support() {
             install_reframework "$appid"
             ;;
     esac
+}
+
+remove_reframework() (
+    local appid="$1" game_info game_dir game_dev game_ino
+    game_info=$(game_install_dir "$appid") || return 0
+    IFS=$'\t' read -r game_dir game_dev game_ino <<<"$game_info"
+    python3 - "$game_dir" "$appid" "$game_dev" "$game_ino" <<'PY'
+import hashlib, json, os, pathlib, stat, sys
+
+game_s, appid_s, dev_s, ino_s = sys.argv[1:]
+resolved = pathlib.Path(game_s).resolve(strict=True)
+fd = os.open("/", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+try:
+    for component in resolved.parts[1:]:
+        next_fd = os.open(component,
+                          os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                          dir_fd=fd)
+        os.close(fd); fd = next_fd
+    info = os.fstat(fd)
+    if (info.st_dev, info.st_ino) != (int(dev_s), int(ino_s)):
+        raise ValueError("verified game directory changed during removal")
+
+    def read_regular(name):
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"refusing unsafe existing {name}")
+        file_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd)
+        with os.fdopen(file_fd, "rb") as stream:
+            return stream.read()
+
+    def exists(name):
+        try:
+            os.stat(name, dir_fd=fd, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+
+    dll_name = "dinput8.dll"
+    metadata_name = ".fling-reframework.json"
+    dll_tomb = ".fling-remove-dinput8.dll"
+    metadata_tomb = ".fling-remove-reframework.json"
+
+    # Finish cleanup after a crash that occurred after both managed files were
+    # atomically quarantined away from their active names.
+    if not exists(dll_name) and not exists(metadata_name):
+        for tomb in (dll_tomb, metadata_tomb):
+            if exists(tomb):
+                read_regular(tomb)
+                os.unlink(tomb, dir_fd=fd)
+        os.fsync(fd)
+        raise SystemExit(0)
+    if not exists(dll_name) or not exists(metadata_name):
+        raise ValueError("managed runtime is incomplete; refusing removal")
+    if exists(dll_tomb) or exists(metadata_tomb):
+        raise ValueError("stale runtime-removal files exist; refusing removal")
+    try:
+        os.stat(".fling-reframework.pending.json", dir_fd=fd, follow_symlinks=False)
+        raise ValueError("runtime transaction is pending; retry installation before removal")
+    except FileNotFoundError:
+        pass
+
+    # Quarantine by rename first, then verify the exact inodes that will be
+    # deleted. A raced-in replacement is restored rather than removed.
+    os.replace(metadata_name, metadata_tomb, src_dir_fd=fd, dst_dir_fd=fd)
+    try:
+        os.replace(dll_name, dll_tomb, src_dir_fd=fd, dst_dir_fd=fd)
+    except Exception:
+        os.replace(metadata_tomb, metadata_name, src_dir_fd=fd, dst_dir_fd=fd)
+        raise
+    os.fsync(fd)
+    try:
+        metadata_raw = read_regular(metadata_tomb)
+        dll = read_regular(dll_tomb)
+        metadata = json.loads(metadata_raw)
+        digest = hashlib.sha256(dll).hexdigest()
+        if (metadata.get("appid") != int(appid_s)
+                or metadata.get("component") != "REFramework"
+                or metadata.get("installed_file") != "dinput8.dll"
+                or metadata.get("sha256") != digest):
+            raise ValueError("managed runtime changed outside Fling; refusing removal")
+    except Exception:
+        if not exists(dll_name):
+            os.replace(dll_tomb, dll_name, src_dir_fd=fd, dst_dir_fd=fd)
+        if not exists(metadata_name):
+            os.replace(metadata_tomb, metadata_name, src_dir_fd=fd, dst_dir_fd=fd)
+        os.fsync(fd)
+        raise
+    os.unlink(dll_tomb, dir_fd=fd)
+    os.unlink(metadata_tomb, dir_fd=fd)
+    os.fsync(fd)
+except (OSError, ValueError, json.JSONDecodeError) as exc:
+    print(f"ERROR: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    os.close(fd)
+PY
+)
+
+cmd_remove_json() {
+    local appid="$1" runtime_error candidate found=0
+    [[ "$appid" =~ ^[0-9]+$ ]] || { json_failure remove "$appid" invalid_args "appid must be numeric" 2; return; }
+    if [ "$appid" != 3357650 ]; then
+        json_local_api remove "$appid"
+        return
+    fi
+    # Preflight the trainer before touching managed game runtime files.
+    for candidate in "$TRAINERS_DIR/$appid - "*; do
+        [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+        found=1
+        [ ! -L "$candidate" ] \
+            || { json_failure remove "$appid" unsafe_path "Refusing unsafe trainer path" 9; return; }
+    done
+    [ "$found" = 1 ] \
+        || { json_failure remove "$appid" local_trainer_missing "No local trainer is installed" 7; return; }
+    trainer_dir_for_game "$appid" "" 1 >/dev/null \
+        || { json_failure remove "$appid" unsafe_path "Refusing unsafe trainer path" 9; return; }
+    if ! runtime_error=$(remove_reframework "$appid" 2>&1); then
+        json_failure remove "$appid" runtime_support_conflict "$runtime_error" 12
+        return
+    fi
+    json_local_api remove "$appid"
 }
 
 # Commit a fully prepared trainer directory with a durable recovery marker.
@@ -1202,7 +1346,7 @@ case "${1:-}" in
     games)     [ "${2:-}" = "--json" ] || { echo "usage: fling games --json" >&2; exit 2; }; json_local_api games ;;
     status)    [ "${2:-}" = "--json" ] || { echo "usage: fling status --json" >&2; exit 2; }; json_local_api status ;;
     install)   [ "${3:-}" = "--json" ] || { echo '{"schema_version":1,"success":false,"operation":"install","appid":0,"error_code":"invalid_args","message":"usage: fling install <appid> --json"}'; exit 2; }; cmd_install_json "$2" ;;
-    remove)    [ "${3:-}" = "--json" ] || { echo '{"schema_version":1,"success":false,"operation":"remove","appid":0,"error_code":"invalid_args","message":"usage: fling remove <appid> --json"}'; exit 2; }; json_local_api remove "$2" ;;
+    remove)    [ "${3:-}" = "--json" ] || { echo '{"schema_version":1,"success":false,"operation":"remove","appid":0,"error_code":"invalid_args","message":"usage: fling remove <appid> --json"}'; exit 2; }; cmd_remove_json "$2" ;;
     refresh)   [ "${3:-}" = "--json" ] || { echo '{"schema_version":1,"success":false,"operation":"refresh","appid":0,"error_code":"invalid_args","message":"usage: fling refresh <appid> --json"}'; exit 2; }; json_local_api refresh "$2" ;;
     list)      list_games | column -ts $'\t' ;;
     get)       [ $# -ge 2 ] || die "usage: fling get <name|appid>"; shift; cmd_get "$*" ;;

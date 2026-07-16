@@ -31,11 +31,11 @@ fling remove <appid> --json
 fling refresh <appid> --json
 ```
 
-`refresh` is intentionally local and safe: it re-reads the selected game's Steam manifest and current trainer state. It does not contact the network or modify files. JSON stdout contains JSON only; diagnostics use stderr. Exit codes are 0 success, 1 general, 2 invalid arguments, 3 missing game, 4 missing remote trainer, 5 network/download, 6 invalid file, 7 missing local trainer, 8 missing dependency, 9 unsafe path, 10 Steam configuration, and 11 game-specific runtime support failure.
+`refresh` is intentionally local and safe: it re-reads the selected game's Steam manifest and current trainer state. It does not contact the network or modify files. JSON stdout contains JSON only; diagnostics use stderr. Exit codes are 0 success, 1 general, 2 invalid arguments, 3 missing game, 4 missing remote trainer, 5 network/download, 6 invalid file, 7 missing local trainer, 8 missing dependency, 9 unsafe path, 10 Steam configuration, 11 game-specific runtime installation failure, and 12 managed runtime removal conflict.
 
 Downloads use redirect handling, HTTP failure checks, connection and total timeouts, size validation, detected-file validation, and ZIP dependency checks. A successful install writes `trainer-metadata.json` beside `Trainer.exe`, including the source URLs, SHA-256, and UTC installation time.
 
-PRAGMATA (Steam app 3357650) requires REFramework for the FLiNG trainer's anti-cheat bypass. Fling installs only `dinput8.dll` from a pinned official nightly release into the verified game root, verifies the release asset's published SHA-256, and records `.fling-reframework.json` there. It will not overwrite an unmanaged or externally changed `dinput8.dll`; resolve that mod-loader conflict manually and retry.
+PRAGMATA (Steam app 3357650) requires REFramework for the FLiNG trainer's anti-cheat bypass. Fling installs only `dinput8.dll` from a pinned official nightly release into the verified game root, verifies the release asset's published SHA-256, and records `.fling-reframework.json` there. It will not overwrite an unmanaged or externally changed `dinput8.dll`; resolve that mod-loader conflict manually and retry. Removing the trainer also removes these runtime files only when their metadata and checksum still prove that Fling manages them.
 
 ## Install Fling UI + CLI
 

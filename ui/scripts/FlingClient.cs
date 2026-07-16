@@ -8,7 +8,9 @@ public sealed class FlingClient
 {
     public static readonly TimeSpan GamesTimeout = TimeSpan.FromSeconds(15);
     public static readonly TimeSpan StatusTimeout = TimeSpan.FromSeconds(10);
-    public static readonly TimeSpan InstallTimeout = TimeSpan.FromMinutes(5);
+    // Trainer and optional runtime-support downloads each have a bounded
+    // network window; this deadline covers both plus discovery and commit.
+    public static readonly TimeSpan InstallTimeout = TimeSpan.FromMinutes(10);
     public static readonly TimeSpan RemoveTimeout = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan RestartTimeout = TimeSpan.FromSeconds(60);
     private readonly AppLogger _log;
@@ -80,8 +82,20 @@ public sealed class FlingClient
             _log.Info($"CLI operation {args[0]} completed");
             return (output, error);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        { try { process.Kill(true); } catch { } throw new FlingClientException("The operation timed out. Please try again."); }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(true);
+                    await process.WaitForExitAsync(CancellationToken.None);
+                }
+            }
+            catch { }
+            if (ct.IsCancellationRequested) throw;
+            throw new FlingClientException("The operation timed out. Please try again.");
+        }
         catch (System.ComponentModel.Win32Exception)
         { throw new FlingClientException("Fling CLI was not found. Open Settings for installation details."); }
     }
@@ -101,6 +115,8 @@ public sealed class FlingClient
             8 => "A required dependency is missing.",
             9 => "An unsafe trainer path was refused.",
             10 => "Steam configuration failed.",
+            11 => "Required game runtime support could not be installed safely.",
+            12 => "Managed game runtime files changed; removal was refused.",
             _ => "The Fling CLI operation failed."
         };
         return new FlingClientException(message, string.IsNullOrWhiteSpace(stderr) ? $"Exit code {code}" : $"Exit code {code}: {stderr.Trim()}");
