@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline integration tests for fling's stable JSON API."""
 import json
+import hashlib
 import os
 import pathlib
 import shutil
@@ -102,6 +103,10 @@ exec /usr/bin/grep "$@"
                 data[start + uncompressed_offset:start + uncompressed_offset + 4] = uncompressed_size.to_bytes(4, "little")
                 start += 4
         path.write_bytes(data)
+
+    def allow_test_reframework_archive(self, archive):
+        self.env["FLING_TESTING"] = "1"
+        self.env["FLING_REFRAMEWORK_SHA256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
 
     def test_games_handles_spaces_escaping_malformed_and_installed(self):
         trainer = self.home / 'Trainers/10 - Quote " Quest/Trainer.exe'
@@ -326,6 +331,194 @@ exit 0
         calls = log.read_text()
         for flag in ("--fail", "--location", "--connect-timeout", "--max-time"):
             self.assertIn(flag, calls)
+
+    def test_pragmata_installs_only_reframework_dinput8_with_metadata(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        archive = self.tmp / "reframework.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dinput8.dll", b"MZ reframework")
+            zf.writestr("reframework_revision.txt", b"nightly-test")
+        self.allow_test_reframework_archive(archive)
+        curl_log = self.tmp / "reframework-curl.log"
+        self.command("curl", f'''printf '%s\\n' "$*" >> "{curl_log}"
+out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+cp "{archive}" "$out"
+''')
+
+        installed = self.invoke("_install-reframework", "3357650")
+
+        self.assertEqual(0, installed.returncode, installed.stdout + installed.stderr)
+        self.assertEqual(b"MZ reframework", (game / "dinput8.dll").read_bytes())
+        self.assertFalse((game / "reframework_revision.txt").exists())
+        metadata = json.loads((game / ".fling-reframework.json").read_text())
+        self.assertEqual(3357650, metadata["appid"])
+        self.assertEqual("dinput8.dll", metadata["installed_file"])
+        self.assertEqual(64, len(metadata["sha256"]))
+        calls = curl_log.read_text()
+        self.assertIn("praydog/REFramework-nightly/releases/download/nightly-01391", calls)
+        self.assertIn("--proto =https", calls)
+
+    def test_reframework_refuses_to_overwrite_unmanaged_dinput8(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        original = game / "dinput8.dll"
+        original.write_bytes(b"unmanaged mod loader")
+        archive = self.tmp / "reframework.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dinput8.dll", b"MZ reframework")
+        self.allow_test_reframework_archive(archive)
+        self.command("curl", f'''out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+cp "{archive}" "$out"
+''')
+
+        refused = self.invoke("_install-reframework", "3357650")
+
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("unmanaged dinput8.dll", (refused.stdout + refused.stderr).lower())
+        self.assertEqual(b"unmanaged mod loader", original.read_bytes())
+        self.assertFalse((game / ".fling-reframework.json").exists())
+
+    def test_reframework_rejects_archive_checksum_mismatch(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        archive = self.tmp / "tampered-reframework.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dinput8.dll", b"MZ tampered")
+        self.env["FLING_TESTING"] = "1"
+        self.env["FLING_REFRAMEWORK_SHA256"] = "0" * 64
+        self.command("curl", f'''out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+cp "{archive}" "$out"
+''')
+
+        refused = self.invoke("_install-reframework", "3357650")
+
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("checksum mismatch", (refused.stdout + refused.stderr).lower())
+        self.assertFalse((game / "dinput8.dll").exists())
+
+    def test_reframework_recovers_pending_metadata_after_interruption(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        dll = b"MZ recovered reframework"
+        digest = hashlib.sha256(dll).hexdigest()
+        (game / "dinput8.dll").write_bytes(dll)
+        (game / ".fling-reframework.json").write_text(json.dumps({
+            "appid": 3357650, "installed_file": "dinput8.dll", "sha256": "0" * 64,
+        }))
+        (game / ".fling-reframework.pending.json").write_text(json.dumps({
+            "schema_version": 1, "appid": 3357650, "component": "REFramework",
+            "installed_file": "dinput8.dll", "sha256": digest,
+        }))
+        archive = self.tmp / "recover-reframework.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dinput8.dll", dll)
+        self.allow_test_reframework_archive(archive)
+        self.command("curl", f'''out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+cp "{archive}" "$out"
+''')
+
+        recovered = self.invoke("_install-reframework", "3357650")
+
+        self.assertEqual(0, recovered.returncode, recovered.stdout + recovered.stderr)
+        self.assertFalse((game / ".fling-reframework.pending.json").exists())
+        metadata = json.loads((game / ".fling-reframework.json").read_text())
+        self.assertEqual(digest, metadata["sha256"])
+
+    def test_reframework_automation_is_scoped_to_pragmata(self):
+        game = self.lib2 / "steamapps/common/Space Game"
+        game.mkdir(parents=True)
+
+        refused = self.invoke("_install-reframework", "20")
+
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("not enabled", (refused.stdout + refused.stderr).lower())
+        self.assertFalse((game / "dinput8.dll").exists())
+
+    def test_reframework_rejects_manifest_install_dir_escape(self):
+        outside = self.lib2 / "steamapps/outside-game"
+        outside.mkdir()
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "../outside-game")
+
+        refused = self.invoke("_install-reframework", "3357650")
+
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("not found safely", (refused.stdout + refused.stderr).lower())
+        self.assertFalse((outside / "dinput8.dll").exists())
+
+    def test_pragmata_public_installs_apply_runtime_support(self):
+        source = FLING.read_text()
+        get_body = source[source.index("cmd_get() {"):source.index("json_failure() {")]
+        json_body = source[source.index("cmd_install_json() {"):source.index("cmd_auto() {")]
+        self.assertIn('cmd_install_json "$appid"', get_body)
+        self.assertIn('install_runtime_support "$appid"', json_body)
+
+    def test_pragmata_json_install_is_single_json_and_installs_reframework(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        archive = self.tmp / "reframework-integration.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dinput8.dll", b"MZ integrated reframework")
+        self.allow_test_reframework_archive(archive)
+        self.command("curl", f'''out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+case "$*" in
+  *%\\{{http_code\\}}*) printf '200' ;;
+  *downloads/mock.bin*) printf 'MZ trainer' > "$out" ;;
+  *REFramework.zip*) cp "{archive}" "$out" ;;
+  *) printf '<a href="https://flingtrainer.com/downloads/mock.bin">trainer</a>' ;;
+esac
+''')
+        self.command("file", "printf '%s\\n' 'PE32 executable'\n")
+
+        result = self.invoke("install", "3357650", "--json")
+        data = self.payload(result)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue(data["success"])
+        self.assertEqual(3357650, data["appid"])
+        self.assertEqual(b"MZ integrated reframework", (game / "dinput8.dll").read_bytes())
+        self.assertEqual(1, len(result.stdout.splitlines()))
+
+    def test_pragmata_runtime_failure_preserves_existing_trainer(self):
+        self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
+        game = self.lib2 / "steamapps/common/PRAGMATA"
+        game.mkdir(parents=True)
+        old_trainer = self.home / "Trainers/3357650 - PRAGMATA/Trainer.exe"
+        old_trainer.parent.mkdir(parents=True)
+        old_trainer.write_bytes(b"MZ previous trainer")
+        archive = self.tmp / "bad-reframework.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dinput8.dll", b"MZ unsupported archive")
+        self.env["FLING_TESTING"] = "1"
+        self.env["FLING_REFRAMEWORK_SHA256"] = "0" * 64
+        self.command("curl", f'''out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+case "$*" in
+  *%\\{{http_code\\}}*) printf '200' ;;
+  *downloads/mock.bin*) printf 'MZ replacement trainer' > "$out" ;;
+  *REFramework.zip*) cp "{archive}" "$out" ;;
+  *) printf '<a href="https://flingtrainer.com/downloads/mock.bin">trainer</a>' ;;
+esac
+''')
+        self.command("file", "printf '%s\\n' 'PE32 executable'\n")
+
+        result = self.invoke("install", "3357650", "--json")
+        data = self.payload(result)
+
+        self.assertEqual(11, result.returncode)
+        self.assertEqual("runtime_support_failed", data["error_code"])
+        self.assertEqual(b"MZ previous trainer", old_trainer.read_bytes())
+        self.assertEqual([], list(old_trainer.parent.parent.glob(".fling-install-*")))
 
     def test_install_confines_malicious_manifest_name_and_preserves_display_name(self):
         name = '雪 " Quest/../../../escaped\ncontrol'
