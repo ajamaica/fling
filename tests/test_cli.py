@@ -613,6 +613,7 @@ esac
 
         self.assertEqual(11, result.returncode)
         self.assertEqual("runtime_support_failed", data["error_code"])
+        self.assertNotIn(">>>", data["message"])
         self.assertEqual(b"MZ previous trainer", old_trainer.read_bytes())
         self.assertEqual([], list(old_trainer.parent.parent.glob(".fling-install-*")))
 

@@ -525,7 +525,6 @@ install_runtime_support() {
     local appid="$1"
     case "$appid" in
         3357650)
-            echo ">>> PRAGMATA requires REFramework; installing dinput8.dll from the official nightly release" >&2
             install_reframework "$appid"
             ;;
     esac
