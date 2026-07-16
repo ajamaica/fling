@@ -976,7 +976,22 @@ cmd_run() {
     lc=$(ls "$STEAM_ROOT"/steamapps/common/SteamLinuxRuntime_*/pressure-vessel/bin/steam-runtime-launch-client 2>/dev/null | head -1)
     if [ -n "$lc" ] && busctl --user list 2>/dev/null | grep -q "com.steampowered.App$appid\b"; then
         echo ">>> Game launcher service detected — injecting into the game's container ✓"
-        exec "$lc" --bus-name="com.steampowered.App$appid" --directory "$HOME" -- wine "$dir/Trainer.exe"
+        # Run the trainer with the game's own folder as its working directory.
+        # Some trainers refuse to hook when cwd is $HOME and exit non-zero without
+        # ever attaching (Elden Ring's exits with status 75); the same trainer,
+        # same container, hooks fine when started from the game's directory.
+        # Falls back to $HOME when the install dir can't be resolved.
+        local game_info trainer_cwd
+        game_info=$(game_install_dir "$appid" 2>/dev/null) \
+            && IFS=$'\t' read -r trainer_cwd _ _ <<<"$game_info"
+        if [ -z "${trainer_cwd:-}" ] || [ ! -d "${trainer_cwd:-}" ]; then
+            trainer_cwd="$HOME"
+        elif [ -d "$trainer_cwd/Game" ]; then
+            # Some titles keep the executable in a subdirectory
+            # (e.g. "ELDEN RING/Game/eldenring.exe").
+            trainer_cwd="$trainer_cwd/Game"
+        fi
+        exec "$lc" --bus-name="com.steampowered.App$appid" --directory "$trainer_cwd" -- wine "$dir/Trainer.exe"
     fi
     # Fallback: separate protontricks container. The trainer will NOT be able
     # to see the game — only useful for testing the trainer UI.
