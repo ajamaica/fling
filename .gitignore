@@ -1,4 +1,4 @@
-# nothing to ignore yet — trainers live in ~/Trainers, not the repo
+# Editor and Python artifacts.
 *.swp
 *.pyc
 __pycache__/
@@ -12,3 +12,7 @@ __pycache__/
 # The repository's root bin directory contains the CLI source.
 !/bin/
 !/bin/fling
+
+/target/
+*.uid
+.DS_Store

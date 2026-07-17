@@ -14,6 +14,23 @@ BUNDLE_INSTALL = ROOT / "packaging/install-bundle.sh"
 PACKAGE = ROOT / "packaging/package-release.sh"
 
 
+def elf_x86_64_fixture():
+    header = bytearray(120)
+    header[:7] = b"\x7fELF\x02\x01\x01"
+    header[16:18] = (2).to_bytes(2, "little")
+    header[18:20] = (62).to_bytes(2, "little")
+    header[20:24] = (1).to_bytes(4, "little")
+    header[24:32] = (0x400078).to_bytes(8, "little")
+    header[32:40] = (64).to_bytes(8, "little")
+    header[52:54] = (64).to_bytes(2, "little")
+    header[54:56] = (56).to_bytes(2, "little")
+    header[56:58] = (1).to_bytes(2, "little")
+    header[64:68] = (1).to_bytes(4, "little")
+    header[68:72] = (5).to_bytes(4, "little")
+    header[96:104] = (120).to_bytes(8, "little")
+    return bytes(header)
+
+
 class ReleaseInstallerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="fling-release-test-"))
@@ -125,6 +142,9 @@ case "${1:-}" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac
             (ROOT / "packaging/install-ui.sh", "packaging/install-ui.sh"),
         ):
             shutil.copy2(source, bundle / relative)
+        cli_binary = bundle / "bin/fling-rs"
+        cli_binary.write_text("prebuilt rust cli")
+        cli_binary.chmod(0o755)
         ui = bundle / "ui-export/fling-ui.x86_64"
         ui.write_text("prebuilt ui")
         ui.chmod(0o755)
@@ -158,6 +178,10 @@ case "${1:-}" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac
         second = self.tmp / "second"
         first.mkdir(); second.mkdir()
         env = os.environ | {"SOURCE_DATE_EPOCH": "1700000000"}
+        cli_binary = self.tmp / "fling-rs"
+        cli_binary.write_bytes(elf_x86_64_fixture())
+        cli_binary.chmod(0o755)
+        env["FLING_CLI_BINARY"] = str(cli_binary)
         for destination in (first, second):
             result = subprocess.run(["/bin/bash", PACKAGE, export, destination],
                                     env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -172,10 +196,59 @@ case "${1:-}" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac
             "fling-linux-x86_64/packaging/install-cli-from-source.sh",
             "fling-linux-x86_64/packaging/install-ui.sh",
             "fling-linux-x86_64/bin/fling",
+            "fling-linux-x86_64/bin/fling-rs",
             "fling-linux-x86_64/systemd/fling-watch.service",
             "fling-linux-x86_64/ui-export/fling-ui.x86_64",
         ):
             self.assertIn(required, names)
+
+    def test_packager_rejects_non_linux_x86_64_cli_artifacts(self):
+        export = self.tmp / "export-artifacts"
+        export.mkdir()
+        (export / "fling-ui.x86_64").write_text("ui")
+        (export / "fling-ui.x86_64").chmod(0o755)
+        output = self.tmp / "artifact-output"
+        output.mkdir()
+        fixtures = {
+            "fake": b"not an executable",
+            "truncated-header": elf_x86_64_fixture()[:64],
+            "fake-complete-header": elf_x86_64_fixture()[:64] + bytes(56),
+            "macho": b"\xcf\xfa\xed\xfe" + bytes(60),
+            "elf-arm64": elf_x86_64_fixture()[:18] + (183).to_bytes(2, "little") + elf_x86_64_fixture()[20:],
+        }
+        for name, contents in fixtures.items():
+            with self.subTest(name=name):
+                binary = self.tmp / name
+                binary.write_bytes(contents)
+                binary.chmod(0o755)
+                result = subprocess.run(
+                    ["/bin/bash", PACKAGE, export, output],
+                    env=os.environ | {"FLING_CLI_BINARY": str(binary)},
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_packager_accepts_portable_linux_x86_64_elf_fixture(self):
+        export = self.tmp / "export-valid-elf"
+        export.mkdir()
+        (export / "fling-ui.x86_64").write_text("ui")
+        (export / "fling-ui.x86_64").chmod(0o755)
+        binary = self.tmp / "valid-fling-rs"
+        binary.write_bytes(elf_x86_64_fixture())
+        binary.chmod(0o755)
+        output = self.tmp / "valid-output"
+        output.mkdir()
+        result = subprocess.run(
+            ["/bin/bash", PACKAGE, export, output],
+            env=os.environ | {"FLING_CLI_BINARY": str(binary)},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_source_launchers_are_executable(self):
+        for launcher in (ROOT / "bin/fling", ROOT / "install.sh", ROOT / "uninstall.sh"):
+            with self.subTest(launcher=launcher.name):
+                self.assertTrue(launcher.stat().st_mode & 0o111, f"{launcher} is not executable")
 
 
 if __name__ == "__main__":

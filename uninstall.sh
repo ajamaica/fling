@@ -14,6 +14,7 @@ systemctl --user unset-environment STEAM_COMPAT_LAUNCHER_SERVICE 2>/dev/null || 
 
 say "Removing the fling CLI..."
 rm -f "$HOME/.local/bin/fling"
+rm -f "$HOME/.local/bin/fling-rs"
 
 if [ "${1:-}" = "--purge" ]; then
     say "Purging downloaded trainers (~/Trainers)..."

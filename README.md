@@ -16,7 +16,7 @@ The target systems are Bazzite and Steam Gaming Mode on Steam Deck, ROG Ally, Xb
 
 The boundary is deliberate:
 
-- `bin/fling` owns Steam discovery, trainer downloads, validation, systemd integration, Proton injection, and trainer execution.
+- `src/` contains the Rust CLI: Steam discovery, trainer downloads, validation, systemd integration, Proton injection, and trainer execution. `bin/fling` is only its stable launcher.
 - `ui/` owns presentation, input, local artwork lookup, settings, and friendly errors. It invokes the CLI without a shell through a versioned JSON API.
 - Trainers remain in `~/Trainers/<appid> - <game name>/Trainer.exe`.
 
@@ -134,11 +134,19 @@ Focus is always visible. Navigation remains enabled while one global trainer mod
 
 ## Test
 
+Developers need a current stable Rust toolchain. Build with `cargo build`; the
+source-tree `bin/fling` launcher then uses `target/debug/fling-rs`. Release
+bundles put a prebuilt x86_64 Linux binary beside the launcher, so end-user
+systems do not need Cargo or Rust.
+
 The CLI suite is self-contained and never downloads or executes a real trainer:
 
 ```bash
 tests/run.sh
 bash -n bin/fling install.sh uninstall.sh tests/run.sh packaging/*.sh
+cargo fmt --check
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
 dotnet run --project ui/tests/FlingUi.Tests.csproj
 dotnet build ui/FlingUi.sln
 dotnet format ui/FlingUi.csproj --verify-no-changes --no-restore

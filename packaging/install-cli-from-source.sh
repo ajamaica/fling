@@ -26,9 +26,18 @@ reject_symlinked_components_below_home() {
 }
 guard_targets() {
     reject_symlinked_components_below_home "$BIN_DIR/fling"
+    reject_symlinked_components_below_home "$BIN_DIR/fling-rs"
     reject_symlinked_components_below_home "$ENV_CONF"
     reject_symlinked_components_below_home "$UNIT_DIR/fling-watch.service"
 }
+
+CLI_BINARY="${FLING_CLI_BINARY:-$REPO_DIR/bin/fling-rs}"
+if [ ! -f "$CLI_BINARY" ]; then
+    command -v cargo >/dev/null || die "bundle is missing the prebuilt fling-rs binary"
+    say "building Rust CLI from source"
+    cargo build --manifest-path "$REPO_DIR/Cargo.toml" --release
+    CLI_BINARY="$REPO_DIR/target/release/fling-rs"
+fi
 
 missing=()
 for c in curl jq python3 file busctl systemctl; do command -v "$c" >/dev/null || missing+=("$c"); done
@@ -48,6 +57,7 @@ guard_targets
 mkdir -p "$BIN_DIR" "$ENV_DIR" "$UNIT_DIR"
 guard_targets
 install -m 0755 "$REPO_DIR/bin/fling" "$BIN_DIR/fling"
+install -m 0755 "$CLI_BINARY" "$BIN_DIR/fling-rs"
 guard_targets
 cat > "$ENV_CONF" <<'EOF'
 # Managed by Fling. Make Proton games expose their launcher service.
