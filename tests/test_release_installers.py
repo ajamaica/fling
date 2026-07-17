@@ -258,6 +258,7 @@ case "${1:-}" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac
         text = workflow.read_text()
         for contract in (
             "v*.*.*",
+            "persist-credentials: false",
             "cargo build --release --target x86_64-unknown-linux-gnu",
             "Godot_v4.4.1-stable_mono_linux_x86_64.zip",
             "Godot_v4.4.1-stable_mono_export_templates.tpz",
