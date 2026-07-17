@@ -27,9 +27,9 @@ cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT HUP INT TERM
 
 say "Downloading Fling ${VERSION}..."
-curl -fL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 \
+curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 15 \
     -o "$work/$ARCHIVE" "$base/$ARCHIVE"
-curl -fL --proto '=https' --tlsv1.2 --retry 3 --connect-timeout 15 \
+curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 15 \
     -o "$work/SHA256SUMS" "$base/SHA256SUMS"
 
 checksum="$(awk -v name="$ARCHIVE" '$2 == name || $2 == "*" name { print $1 }' "$work/SHA256SUMS")"

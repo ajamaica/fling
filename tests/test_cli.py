@@ -134,6 +134,19 @@ exec /usr/bin/grep "$@"
                     "steam_root", "trainers_directory"}
         self.assertEqual(expected, set(data))
 
+    def test_games_and_status_invalid_arity_preserve_specific_usage_contract(self):
+        for args, usage in (
+            (("games",), "usage: fling games --json\n"),
+            (("games", "--json", "extra"), "usage: fling games --json\n"),
+            (("status",), "usage: fling status --json\n"),
+            (("status", "--json", "extra"), "usage: fling status --json\n"),
+        ):
+            with self.subTest(args=args):
+                result = self.invoke(*args)
+                self.assertEqual(2, result.returncode)
+                self.assertEqual("", result.stdout)
+                self.assertEqual(usage, result.stderr)
+
     def test_game_ready_waits_for_installed_game_process_after_secondary_launcher(self):
         proc = self.tmp / "proc"
         launcher = proc / "101"
@@ -223,15 +236,11 @@ exec /usr/bin/grep "$@"
         )
 
     def test_watcher_uses_process_readiness_instead_of_a_global_delay(self):
-        source = FLING.read_text()
-        watch = source[source.index("cmd_watch() {"):source.index("cmd_installed() {")]
-        self.assertNotIn("sleep 10", watch)
-        self.assertIn('game_process_ready "$svc"', watch)
-        self.assertLess(watch.index('game_process_ready "$svc"'),
-                        watch.index('seen[$key]=in-flight'))
-        self.assertIn('active[$key]=1', watch)
-        self.assertIn("unset 'seen[$key]'", watch)
-        self.assertIn("unset 'waiting[$key]'", watch)
+        result = subprocess.run(
+            ["cargo", "test", "--test", "watcher_state", "--quiet"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_watcher_retries_a_failed_direct_launch_while_service_is_active(self):
         attempts = self.tmp / "attempts"
@@ -296,6 +305,24 @@ exit 0
         (one / "Trainer.exe").write_bytes(b"MZ"); (two / "Trainer.exe").write_bytes(b"MZ")
         data = self.payload(self.invoke("remove", "10", "--json", check=True))
         self.assertTrue(data["success"]); self.assertFalse(one.exists()); self.assertTrue(two.exists())
+
+    def test_public_remove_recovers_durable_staged_rename_before_lookup(self):
+        original = self.home / "Trainers/10 - Quote Quest"
+        tombstone = self.home / "Trainers/.fling-remove-10"
+        original.mkdir(parents=True)
+        (original / "Trainer.exe").write_bytes(b"MZ trainer")
+        original.rename(tombstone)
+        (self.home / "Trainers/.fling-remove-10.json").write_text(json.dumps({
+            "schema_version": 1, "appid": 10, "original": "10 - Quote Quest",
+            "tombstone": ".fling-remove-10", "phase": "staged",
+        }))
+
+        result = self.invoke("remove", "10", "--json", check=True)
+
+        self.assertTrue(self.payload(result)["success"])
+        self.assertFalse(original.exists())
+        self.assertFalse(tombstone.exists())
+        self.assertFalse((self.home / "Trainers/.fling-remove-10.json").exists())
 
     def test_pragmata_remove_deletes_only_verified_managed_runtime(self):
         self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
@@ -387,9 +414,13 @@ exit 0
         self.assertTrue(trainer.is_file())
         metadata = json.loads((trainer.parent / "trainer-metadata.json").read_text())
         self.assertEqual(20, data["appid"]); self.assertEqual(20, metadata["appid"]); self.assertEqual(64, len(metadata["sha256"]))
-        calls = log.read_text()
+        calls = [call for call in log.read_text().splitlines() if "--location" in call]
+        self.assertGreaterEqual(len(calls), 3)
+        for call in calls:
+            self.assertIn("--proto =https", call)
+            self.assertIn("--proto-redir =https", call)
         for flag in ("--fail", "--location", "--connect-timeout", "--max-time"):
-            self.assertIn(flag, calls)
+            self.assertTrue(all(flag in call for call in calls))
 
     def test_pragmata_installs_only_reframework_dinput8_with_metadata(self):
         self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
@@ -416,10 +447,13 @@ cp "{archive}" "$out"
         self.assertEqual(3357650, metadata["appid"])
         self.assertEqual("dinput8.dll", metadata["installed_file"])
         self.assertEqual(64, len(metadata["sha256"]))
-        calls = curl_log.read_text()
-        self.assertIn("praydog/REFramework-nightly/releases/download/nightly-01391", calls)
-        self.assertIn("--proto =https", calls)
-        self.assertIn("--max-filesize 67108864", calls)
+        calls = [call for call in curl_log.read_text().splitlines() if "--location" in call]
+        self.assertGreaterEqual(len(calls), 1)
+        for call in calls:
+            self.assertIn("praydog/REFramework-nightly/releases/download/nightly-01391", call)
+            self.assertIn("--proto =https", call)
+            self.assertIn("--proto-redir =https", call)
+            self.assertIn("--max-filesize 67108864", call)
 
     def test_reframework_refuses_to_overwrite_unmanaged_dinput8(self):
         self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
@@ -551,11 +585,10 @@ cp "{archive}" "$out"
         self.assertFalse((real_game / "dinput8.dll").exists())
 
     def test_pragmata_public_installs_apply_runtime_support(self):
-        source = FLING.read_text()
-        get_body = source[source.index("cmd_get() {"):source.index("json_failure() {")]
-        json_body = source[source.index("cmd_install_json() {"):source.index("cmd_auto() {")]
-        self.assertIn('cmd_install_json "$appid"', get_body)
-        self.assertIn('install_runtime_support "$appid"', json_body)
+        source = (ROOT / "src/install.rs").read_text()
+        self.assertIn("legacy_get", source)
+        self.assertIn("install_inner(config, appid)", source)
+        self.assertIn("runtime::install(config, appid)", source)
 
     def test_pragmata_json_install_is_single_json_and_installs_reframework(self):
         self.manifest(self.lib2, "3357650", "PRAGMATA", "PRAGMATA")
@@ -784,6 +817,24 @@ esac
         p = self.invoke("install", "20", "--json"); self.assertEqual(6, p.returncode); self.assertEqual("invalid_file", self.payload(p)["error_code"])
         self.mock_download(page_code="404")
         p = self.invoke("install", "20", "--json"); self.assertEqual(4, p.returncode)
+
+    def test_install_network_failure_has_exit_five_and_single_json_stdout(self):
+        self.mock_download(page_code="000")
+        p = self.invoke("install", "20", "--json")
+        self.assertEqual(5, p.returncode)
+        self.assertEqual("network_error", self.payload(p)["error_code"])
+        self.assertEqual(1, len(p.stdout.splitlines()))
+
+    def test_install_missing_dependency_has_exit_eight_and_single_json_stdout(self):
+        self.command("curl", "exit 0\n")
+        self.command("python3", "exit 0\n")
+        (self.bin / "dirname").symlink_to("/usr/bin/dirname")
+        self.env["PATH"] = str(self.bin)
+        p = self.invoke("install", "20", "--json")
+        self.assertEqual(8, p.returncode)
+        self.assertEqual("dependency_missing", self.payload(p)["error_code"])
+        self.assertIn("file", self.payload(p)["message"])
+        self.assertEqual(1, len(p.stdout.splitlines()))
         self.mock_download(link=False)
         p = self.invoke("install", "20", "--json"); self.assertEqual(4, p.returncode)
 
