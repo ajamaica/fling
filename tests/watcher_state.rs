@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use fling_cli::watcher::{
     Decision, Readiness, WatchState, parse_service_instances, poll_interval_from, retry_delay_from,
     session_environment, shortcut_gameid_from_vdf, steam_session_environment_for_pids,
@@ -165,6 +167,137 @@ fn steam_session_uses_first_usable_environment_across_all_pids() {
             .get("DISPLAY")
             .map(String::as_str),
         Some(":22")
+    );
+}
+
+#[test]
+fn special_delay_starts_at_readiness_and_launches_at_exact_deadline() {
+    let mut state = WatchState::new(3);
+    let delay = Duration::from_secs(90);
+    assert_eq!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Ready,
+            Duration::from_secs(100),
+            delay,
+        ),
+        Decision::Delaying {
+            first: true,
+            remaining: delay,
+        }
+    );
+    assert_eq!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Ready,
+            Duration::from_secs(189),
+            delay,
+        ),
+        Decision::Delaying {
+            first: false,
+            remaining: Duration::from_secs(1),
+        }
+    );
+    assert_eq!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Ready,
+            Duration::from_secs(190),
+            delay,
+        ),
+        Decision::LaunchReady
+    );
+}
+
+#[test]
+fn special_delay_resets_when_readiness_or_original_service_ends() {
+    let mut state = WatchState::new(1);
+    let delay = Duration::from_secs(90);
+    assert!(matches!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Ready,
+            Duration::ZERO,
+            delay,
+        ),
+        Decision::Delaying { first: true, .. }
+    ));
+    assert_eq!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Waiting,
+            Duration::from_secs(30),
+            delay,
+        ),
+        Decision::Waiting(true)
+    );
+    assert_eq!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Ready,
+            Duration::from_secs(40),
+            delay,
+        ),
+        Decision::Delaying {
+            first: false,
+            remaining: delay,
+        }
+    );
+
+    state.retire_except(std::iter::empty::<&str>());
+    assert!(matches!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Ready,
+            Duration::from_secs(100),
+            delay,
+        ),
+        Decision::Delaying {
+            first: true,
+            remaining
+        } if remaining == delay
+    ));
+}
+
+#[test]
+fn special_delay_never_uses_readiness_fallback() {
+    let mut state = WatchState::new(1);
+    let delay = Duration::from_secs(90);
+    assert_eq!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Unavailable,
+            Duration::ZERO,
+            delay,
+        ),
+        Decision::Unavailable(true)
+    );
+    assert_eq!(
+        state.observe_at(
+            "1245620:7",
+            true,
+            false,
+            Readiness::Unavailable,
+            Duration::from_secs(90),
+            delay,
+        ),
+        Decision::Unavailable(false)
     );
 }
 

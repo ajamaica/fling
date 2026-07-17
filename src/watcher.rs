@@ -1,4 +1,4 @@
-use crate::{config::Config, error::Error, process};
+use crate::{config::Config, error::Error, game_profiles, process};
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
@@ -74,6 +74,7 @@ pub enum Decision {
     None,
     Waiting(bool),
     Unavailable(bool),
+    Delaying { first: bool, remaining: Duration },
     AlreadyRunning,
     LaunchReady,
     LaunchFallback,
@@ -83,6 +84,8 @@ pub enum Decision {
 struct InstanceState {
     claimed: bool,
     waiting_reported: bool,
+    delay_reported: bool,
+    ready_at: Option<Duration>,
     unavailable: u32,
 }
 
@@ -108,6 +111,25 @@ impl WatchState {
         already_running: bool,
         readiness: Readiness,
     ) -> Decision {
+        self.observe_at(
+            key,
+            installed,
+            already_running,
+            readiness,
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+    }
+
+    pub fn observe_at(
+        &mut self,
+        key: &str,
+        installed: bool,
+        already_running: bool,
+        readiness: Readiness,
+        now: Duration,
+        launch_delay: Duration,
+    ) -> Decision {
         let entry = self.instances.entry(key.to_owned()).or_default();
         if entry.claimed {
             return Decision::None;
@@ -129,18 +151,33 @@ impl WatchState {
         }
         match readiness {
             Readiness::Ready => {
+                entry.unavailable = 0;
+                if !launch_delay.is_zero() {
+                    let ready_at = *entry.ready_at.get_or_insert(now);
+                    let elapsed = now.saturating_sub(ready_at);
+                    if elapsed < launch_delay {
+                        let first = !entry.delay_reported;
+                        entry.delay_reported = true;
+                        return Decision::Delaying {
+                            first,
+                            remaining: launch_delay.saturating_sub(elapsed),
+                        };
+                    }
+                }
                 entry.claimed = true;
                 self.launched_appids.extend(appid);
                 Decision::LaunchReady
             }
             Readiness::Waiting => {
+                entry.ready_at = None;
                 let first = !entry.waiting_reported;
                 entry.waiting_reported = true;
                 Decision::Waiting(first)
             }
             Readiness::Unavailable => {
+                entry.ready_at = None;
                 entry.unavailable = entry.unavailable.saturating_add(1);
-                if entry.unavailable >= self.failure_limit {
+                if launch_delay.is_zero() && entry.unavailable >= self.failure_limit {
                     entry.claimed = true;
                     self.launched_appids.extend(appid);
                     Decision::LaunchFallback
@@ -349,7 +386,10 @@ pub fn watch(config: &Config) -> Result<(), Error> {
         .filter(|value: &u32| *value > 0)
         .unwrap_or(6);
     let mut state = WatchState::new(failure_limit);
+    let watch_started = Instant::now();
     loop {
+        let interval = env::var("FLING_WATCH_POLL_INTERVAL").ok();
+        let mut sleep_for = Duration::from_secs_f64(poll_interval_from(interval.as_deref()));
         let out = Command::new("busctl")
             .args(["--user", "list", "--no-legend"])
             .output()?;
@@ -362,17 +402,32 @@ pub fn watch(config: &Config) -> Result<(), Error> {
                 1 => Readiness::Waiting,
                 _ => Readiness::Unavailable,
             };
-            match state.observe(
+            let observed_at = watch_started.elapsed();
+            let launch_delay = game_profiles::for_appid(id)
+                .map(|profile| Duration::from_secs(profile.trainer_launch_delay_seconds))
+                .unwrap_or_default();
+            match state.observe_at(
                 &service.key,
                 crate::steam::find_trainer(config, id).is_some(),
                 trainer_running(id),
                 readiness,
+                observed_at,
+                launch_delay,
             ) {
                 Decision::Waiting(true) => {
                     println!("game {id} launcher detected — waiting for game process")
                 }
                 Decision::Unavailable(true) => {
                     println!("game {id} readiness detection unavailable — retrying")
+                }
+                Decision::Delaying { first, remaining } => {
+                    if first {
+                        println!(
+                            "game {id} has special settings — waiting {}s after readiness before trainer launch",
+                            launch_delay.as_secs()
+                        );
+                    }
+                    sleep_for = sleep_for.min(remaining);
                 }
                 Decision::AlreadyRunning
                 | Decision::None
@@ -404,9 +459,6 @@ pub fn watch(config: &Config) -> Result<(), Error> {
             }
         }
         state.retire_except(services.iter().map(|service| service.key.as_str()));
-        let interval = env::var("FLING_WATCH_POLL_INTERVAL").ok();
-        thread::sleep(Duration::from_secs_f64(poll_interval_from(
-            interval.as_deref(),
-        )));
+        thread::sleep(sleep_for);
     }
 }

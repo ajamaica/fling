@@ -15,6 +15,20 @@ class UiReviewRegressionTest(unittest.TestCase):
         self.assertIn("WaitForExitAsync(CancellationToken.None)", source)
         self.assertIn("if (ct.IsCancellationRequested) throw", source)
 
+    def test_elden_ring_details_render_special_trainer_guidance(self):
+        source = (ROOT / "ui/scripts/Main.cs").read_text()
+        match = re.search(
+            r"private void ShowDetails\(SteamGame game\)(.*?)\n    }\n\n    private async Task ModifyTrainerAsync",
+            source,
+            re.DOTALL,
+        )
+        assert match is not None
+        details = match.group(1)
+
+        self.assertIn("GameGuidance.For(game)", details)
+        self.assertIn("Special setup", details)
+        self.assertIn("AutowrapMode = TextServer.AutowrapMode.WordSmart", details)
+
     def test_library_scroll_viewport_reserves_footer_clearance(self):
         source = (ROOT / "ui/scripts/Main.cs").read_text()
 

@@ -9,11 +9,17 @@ static void Assert(bool condition, string message)
     if (!condition) throw new InvalidOperationException(message);
 }
 
-const string gamesJson = """{"schema_version":1,"games":[{"appid":20,"name":"Space Game","install_dir":"Space Game","library_path":"/games","trainer_installed":false,"trainer_path":null,"running":false}]}""";
+const string gamesJson = """{"schema_version":1,"games":[{"appid":1245620,"name":"ELDEN RING","install_dir":"ELDEN RING Game","library_path":"/games","trainer_installed":false,"trainer_path":null,"running":false,"trainer_launch_delay_seconds":90,"trainer_instructions":["Use Windowed mode before activating the trainer.","Launch without Easy Anti-Cheat (EAC) and stay offline."]}]}""";
 var games = JsonSerializer.Deserialize<GameListResponse>(gamesJson)!;
 Assert(games.SchemaVersion == 1, "schema_version did not deserialize");
-Assert(games.Games.Count == 1 && games.Games[0].AppId == 20, "numeric appid did not deserialize");
+Assert(games.Games.Count == 1 && games.Games[0].AppId == 1245620, "numeric appid did not deserialize");
 Assert(!games.Games[0].TrainerInstalled, "trainer state did not deserialize");
+Assert(games.Games[0].TrainerLaunchDelaySeconds == 90, "special launch delay did not deserialize");
+var guidance = GameGuidance.For(games.Games[0]);
+Assert(guidance is not null, "Elden Ring guidance was missing");
+Assert(guidance!.Contains("90 seconds"), "guidance omitted the launch delay");
+Assert(guidance.Contains("Windowed mode"), "guidance omitted Windowed mode");
+Assert(guidance.Contains("without Easy Anti-Cheat (EAC)"), "guidance omitted the EAC requirement");
 
 const string commandJson = """{"schema_version":1,"success":false,"operation":"install","appid":20,"error_code":"network_error","message":"Trainer download failed","restart_required":false}""";
 var command = JsonSerializer.Deserialize<CommandResponse>(commandJson)!;
@@ -21,12 +27,12 @@ Assert(!command.Success && command.ErrorCode == "network_error", "command error 
 Assert(command.AppId == 20, "command appid was not numeric");
 
 var namedCard = GameCardPresentation.For(games.Games[0]);
-Assert(namedCard.Title == "Space Game", "card title was not preserved");
+Assert(namedCard.Title == "ELDEN RING", "card title was not preserved");
 Assert(namedCard.ArtworkFallback == "◆", "card did not provide a deliberate artwork fallback");
 
 var unnamedGame = games.Games[0] with { Name = "   " };
 var unnamedCard = GameCardPresentation.For(unnamedGame);
-Assert(unnamedCard.Title == "Unknown game (AppID 20)", "blank game name did not get a visible title fallback");
+Assert(unnamedCard.Title == "Unknown game (AppID 1245620)", "blank game name did not get a visible title fallback");
 Assert(unnamedCard.AccessibleText.Contains(unnamedCard.Title), "card accessible text omitted the fallback title");
 
 var artworkRoot = Path.Combine(Path.GetTempPath(), $"fling-artwork-tests-{Guid.NewGuid():N}");

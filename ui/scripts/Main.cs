@@ -202,6 +202,18 @@ public partial class Main : Control
         var back = Button("‹ Back  [B]", () => { BuildLibrary(); RenderCards(); }); _root.AddChild(back);
         var title = new Label { Text = game.Name }; title.AddThemeFontSizeOverride("font_size", 42); _root.AddChild(title);
         _root.AddChild(new Label { Text = $"Steam AppID  {game.AppId}\nTrainer  {(game.TrainerInstalled ? "Installed" : "Not installed")}" });
+        var guidance = GameGuidance.For(game);
+        if (guidance is not null)
+        {
+            var specialSetup = new Label
+            {
+                Text = $"Special setup\n{guidance}",
+                Modulate = new Color("ff9f1c"),
+                AutowrapMode = TextServer.AutowrapMode.WordSmart
+            };
+            specialSetup.AddThemeFontSizeOverride("font_size", 20);
+            _root.AddChild(specialSetup);
+        }
         if (game.TrainerPath is not null) _root.AddChild(new Label { Text = $"Advanced: {game.TrainerPath}", Modulate = new Color("aeb5bd"), AutowrapMode = TextServer.AutowrapMode.WordSmart });
         var phase = new Label { Text = "Ready" }; _detailsPhase = phase; _root.AddChild(phase);
         var action = Button(game.TrainerInstalled ? "Remove trainer  [X]" : "Install trainer  [X]", () => _ = ModifyTrainerAsync(game, phase));

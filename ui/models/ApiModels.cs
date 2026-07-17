@@ -10,7 +10,9 @@ public sealed record SteamGame(
     [property: JsonPropertyName("library_path")] string LibraryPath,
     [property: JsonPropertyName("trainer_installed")] bool TrainerInstalled,
     [property: JsonPropertyName("trainer_path")] string? TrainerPath,
-    [property: JsonPropertyName("running")] bool Running);
+    [property: JsonPropertyName("running")] bool Running,
+    [property: JsonPropertyName("trainer_launch_delay_seconds")] int TrainerLaunchDelaySeconds = 0,
+    [property: JsonPropertyName("trainer_instructions")] IReadOnlyList<string>? TrainerInstructions = null);
 
 public sealed record GameListResponse(
     [property: JsonPropertyName("schema_version")] int SchemaVersion,
