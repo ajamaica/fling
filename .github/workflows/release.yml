@@ -1,0 +1,172 @@
+name: Tagged release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "src/**"
+      - "bin/**"
+      - "systemd/**"
+      - "packaging/**"
+      - "ui/**"
+      - "tests/test_release_installers.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tagged-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GODOT_VERSION: 4.4.1-stable
+  GODOT_TEMPLATE_VERSION: 4.4.1.stable.mono
+  GODOT_EDITOR_ARCHIVE: Godot_v4.4.1-stable_mono_linux_x86_64.zip
+  GODOT_TEMPLATES_ARCHIVE: Godot_v4.4.1-stable_mono_export_templates.tpz
+  GODOT_EDITOR_SHA512: 53508edb91e0674a5072cbcc438d5523697a54f434154637aecf7a6fa6c84ee1f93578ce263ddc951d5be73e70e031ff52ae2bf03f3716a44245fd56710543e9
+  GODOT_TEMPLATES_SHA512: 06375452a39815796369a2e7f145e1446cea009e387bc03ca40338cac407f864d026b1c09148cc703e54f5c27cfcc581df254d00b040da1a8a18d0f240e71f48
+
+jobs:
+  build-release:
+    name: Build Linux release bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+            echo "Tag must use a version such as v1.2.3" >&2
+            exit 2
+          }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build Rust CLI
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build Godot C# project
+        run: dotnet build ui/FlingUi.sln --configuration Release
+
+      - name: Download and verify Godot .NET editor and export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}"
+          mkdir -p .release-tools/downloads .release-tools/editor .release-tools/templates
+          curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 15 \
+            -o ".release-tools/downloads/${GODOT_EDITOR_ARCHIVE}" \
+            "${base}/${GODOT_EDITOR_ARCHIVE}"
+          curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --retry 3 --connect-timeout 15 \
+            -o ".release-tools/downloads/${GODOT_TEMPLATES_ARCHIVE}" \
+            "${base}/${GODOT_TEMPLATES_ARCHIVE}"
+          printf '%s  %s\n' "$GODOT_EDITOR_SHA512" ".release-tools/downloads/${GODOT_EDITOR_ARCHIVE}" | sha512sum -c -
+          printf '%s  %s\n' "$GODOT_TEMPLATES_SHA512" ".release-tools/downloads/${GODOT_TEMPLATES_ARCHIVE}" | sha512sum -c -
+          unzip -q ".release-tools/downloads/${GODOT_EDITOR_ARCHIVE}" -d .release-tools/editor
+          unzip -q ".release-tools/downloads/${GODOT_TEMPLATES_ARCHIVE}" -d .release-tools/templates
+          template_dir="$HOME/.local/share/godot/export_templates/${GODOT_TEMPLATE_VERSION}"
+          mkdir -p "$template_dir"
+          cp -a .release-tools/templates/templates/. "$template_dir/"
+          editor=".release-tools/editor/Godot_v4.4.1-stable_mono_linux_x86_64/Godot_v4.4.1-stable_mono_linux.x86_64"
+          test -f "$editor"
+          chmod 0755 "$editor"
+          printf 'GODOT_EDITOR=%s/%s\n' "$GITHUB_WORKSPACE" "$editor" >> "$GITHUB_ENV"
+
+      - name: Export Linux UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/linux
+          "$GODOT_EDITOR" --headless --path ui --editor --quit
+          "$GODOT_EDITOR" --headless --path ui \
+            --export-release "Linux/X11" "$GITHUB_WORKSPACE/build/linux/fling-ui.x86_64"
+          test -x build/linux/fling-ui.x86_64
+          test -f build/linux/fling-ui.pck
+
+      - name: Package deterministic release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export FLING_CLI_BINARY="$GITHUB_WORKSPACE/target/x86_64-unknown-linux-gnu/release/fling-rs"
+          ./packaging/package-release.sh "$GITHUB_WORKSPACE/build/linux" "$GITHUB_WORKSPACE/dist"
+          cd dist
+          sha256sum -c SHA256SUMS
+          tar -tzf fling-linux-x86_64.tar.gz | grep -Fx 'fling-linux-x86_64/bin/fling-rs'
+          tar -tzf fling-linux-x86_64.tar.gz | grep -Fx 'fling-linux-x86_64/ui-export/fling-ui.x86_64'
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fling-linux-x86_64-${{ github.sha }}
+          path: |
+            dist/fling-linux-x86_64.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish tagged GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download verified release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fling-linux-x86_64-${{ github.sha }}
+          path: dist
+
+      - name: Recheck release checksum
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/fling-linux-x86_64.tar.gz
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              dist/fling-linux-x86_64.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              dist/fling-linux-x86_64.tar.gz dist/SHA256SUMS \
+              --verify-tag --generate-notes --title "Fling ${GITHUB_REF_NAME}"
+          fi

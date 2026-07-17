@@ -250,6 +250,36 @@ case "${1:-}" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac
         )
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
+    def test_tagged_release_workflow_builds_and_publishes_complete_bundle(self):
+        workflow = ROOT / ".github/workflows/release.yml"
+        preset = ROOT / "ui/export_presets.cfg"
+        self.assertTrue(workflow.is_file())
+        self.assertTrue(preset.is_file())
+        text = workflow.read_text()
+        for contract in (
+            "v*.*.*",
+            "persist-credentials: false",
+            "cargo build --release --target x86_64-unknown-linux-gnu",
+            "Godot_v4.4.1-stable_mono_linux_x86_64.zip",
+            "Godot_v4.4.1-stable_mono_export_templates.tpz",
+            "sha512sum -c",
+            '--export-release "Linux/X11"',
+            "packaging/package-release.sh",
+            "sha256sum -c SHA256SUMS",
+            "gh release create",
+            "gh release upload",
+        ):
+            self.assertIn(contract, text)
+        self.assertIn("startsWith(github.ref, 'refs/tags/')", text)
+        self.assertIn("publish-release:", text)
+        self.assertIn("needs: build-release", text)
+        self.assertIn("contents: read", text)
+        preset_text = preset.read_text()
+        self.assertIn('name="Linux/X11"', preset_text)
+        self.assertIn('platform="Linux"', preset_text)
+        self.assertIn('export_path="../build/linux/fling-ui.x86_64"', preset_text)
+        self.assertIn('binary_format/architecture="x86_64"', preset_text)
+
     def test_source_launchers_are_executable(self):
         for launcher in (ROOT / "bin/fling", ROOT / "install.sh", ROOT / "uninstall.sh"):
             with self.subTest(launcher=launcher.name):
