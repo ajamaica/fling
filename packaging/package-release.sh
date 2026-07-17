@@ -33,7 +33,7 @@ if len(data) >= 64 and data[:7] == b'\x7fELF\x02\x01\x01':
     if valid:
         for offset in range(phoff, end, phentsize):
             p_type, flags = struct.unpack_from('<II', data, offset)
-            file_offset, file_size = struct.unpack_from('<QQ', data, offset + 8)[0], struct.unpack_from('<Q', data, offset + 32)[0]
+            file_offset, file_size = struct.unpack_from('<Q', data, offset + 8)[0], struct.unpack_from('<Q', data, offset + 32)[0]
             file_end = file_offset + file_size
             if p_type == 1 and flags & 1 and file_end >= file_offset and file_end <= len(data):
                 executable_load = True

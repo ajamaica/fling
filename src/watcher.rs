@@ -179,9 +179,16 @@ pub fn shortcut_gameid_from_vdf(data: &[u8], appid: u32) -> Option<u64> {
             continue;
         }
         let end = starts.get(position + 1).copied().unwrap_or(data.len());
-        if data[value + 4..end]
+        let shortcut = &data[value + 4..end];
+        if shortcut
             .windows(needle.len())
-            .any(|bytes| bytes == needle.as_bytes())
+            .enumerate()
+            .any(|(index, bytes)| {
+                bytes == needle.as_bytes()
+                    && shortcut
+                        .get(index + needle.len())
+                        .is_none_or(|next| !next.is_ascii_digit())
+            })
         {
             let id = u32::from_le_bytes(data[value..value + 4].try_into().ok()?);
             return Some(((id as u64) << 32) | 0x0200_0000);
@@ -214,15 +221,15 @@ pub(crate) fn steam_session_environment(config: &Config) -> HashMap<String, Stri
     let Ok(output) = Command::new("pgrep").args(["-x", "steam"]).output() else {
         return HashMap::new();
     };
-    let Some(pid) = String::from_utf8_lossy(&output.stdout)
+    steam_session_environment_for_pids(config, &output.stdout)
+}
+
+pub fn steam_session_environment_for_pids(config: &Config, pids: &[u8]) -> HashMap<String, String> {
+    String::from_utf8_lossy(pids)
         .lines()
-        .next()
-        .map(str::to_owned)
-    else {
-        return HashMap::new();
-    };
-    fs::read(config.proc_root.join(pid).join("environ"))
+        .filter_map(|pid| fs::read(config.proc_root.join(pid).join("environ")).ok())
         .map(|data| session_environment(&data))
+        .find(|environment| !environment.is_empty())
         .unwrap_or_default()
 }
 
@@ -258,6 +265,25 @@ fn active(appid: u32) -> bool {
                     .any(|service| service.appid == appid)
         })
 }
+
+pub fn retry_delay_from(value: Option<&str>) -> f64 {
+    const MAX_DELAY_SECONDS: f64 = 86_400.0;
+    value
+        .and_then(|value| value.parse().ok())
+        .filter(|value: &f64| value.is_finite() && (0.0..=MAX_DELAY_SECONDS).contains(value))
+        .unwrap_or(5.0)
+}
+
+pub fn poll_interval_from(value: Option<&str>) -> f64 {
+    const MAX_INTERVAL_SECONDS: f64 = 86_400.0;
+    value
+        .and_then(|value| value.parse().ok())
+        .filter(|value: &f64| {
+            value.is_finite() && (f64::MIN_POSITIVE..=MAX_INTERVAL_SECONDS).contains(value)
+        })
+        .unwrap_or(5.0)
+}
+
 pub fn retry(appid: u32) -> i32 {
     retry_with_environment(appid, &HashMap::new())
 }
@@ -268,10 +294,8 @@ fn retry_with_environment(appid: u32, session: &HashMap<String, String>) -> i32 
         .and_then(|v| v.parse().ok())
         .filter(|v: &u32| *v > 0)
         .unwrap_or(3);
-    let delay = env::var("FLING_WATCH_RETRY_DELAY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5.0);
+    let delay_value = env::var("FLING_WATCH_RETRY_DELAY").ok();
+    let delay = retry_delay_from(delay_value.as_deref());
     let min = env::var("FLING_WATCH_MIN_RUNTIME")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -380,11 +404,9 @@ pub fn watch(config: &Config) -> Result<(), Error> {
             }
         }
         state.retire_except(services.iter().map(|service| service.key.as_str()));
-        thread::sleep(Duration::from_secs_f64(
-            env::var("FLING_WATCH_POLL_INTERVAL")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5.0),
-        ));
+        let interval = env::var("FLING_WATCH_POLL_INTERVAL").ok();
+        thread::sleep(Duration::from_secs_f64(poll_interval_from(
+            interval.as_deref(),
+        )));
     }
 }

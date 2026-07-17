@@ -1,6 +1,6 @@
 use fling_cli::watcher::{
-    Decision, Readiness, WatchState, parse_service_instances, session_environment,
-    shortcut_gameid_from_vdf,
+    Decision, Readiness, WatchState, parse_service_instances, poll_interval_from, retry_delay_from,
+    session_environment, shortcut_gameid_from_vdf, steam_session_environment_for_pids,
 };
 
 #[test]
@@ -133,4 +133,58 @@ fn parses_matching_steam_shortcut_gameid() {
         Some(((appid as u64) << 32) | 0x0200_0000)
     );
     assert_eq!(shortcut_gameid_from_vdf(&vdf, 43), None);
+}
+
+#[test]
+fn shortcut_appid_requires_a_numeric_token_boundary() {
+    let shortcut_appid = 123_u32;
+    let mut vdf = b"\x02appid\x00".to_vec();
+    vdf.extend(shortcut_appid.to_le_bytes());
+    vdf.extend(b"\x01Exe\x00fling run 420\x00\x08");
+
+    assert_eq!(shortcut_gameid_from_vdf(&vdf, 42), None);
+}
+
+#[test]
+fn steam_session_uses_first_usable_environment_across_all_pids() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let proc_root = temp.path().join("proc");
+    std::fs::create_dir_all(proc_root.join("11")).expect("irrelevant pid");
+    std::fs::write(proc_root.join("11/environ"), b"HOME=/irrelevant\0").expect("environment");
+    std::fs::create_dir_all(proc_root.join("22")).expect("usable pid");
+    std::fs::write(proc_root.join("22/environ"), b"DISPLAY=:22\0").expect("environment");
+    let config = fling_cli::config::Config {
+        home: temp.path().join("home"),
+        trainers: temp.path().join("trainers"),
+        steam_root: temp.path().join("steam"),
+        proc_root,
+    };
+
+    assert_eq!(
+        steam_session_environment_for_pids(&config, b"11\n22\n")
+            .get("DISPLAY")
+            .map(String::as_str),
+        Some(":22")
+    );
+}
+
+#[test]
+fn watcher_timing_values_are_safe_for_duration_conversion() {
+    for invalid in [
+        None,
+        Some("invalid"),
+        Some("NaN"),
+        Some("inf"),
+        Some("-1"),
+        Some("1e300"),
+    ] {
+        assert_eq!(retry_delay_from(invalid), 5.0);
+        assert_eq!(poll_interval_from(invalid), 5.0);
+    }
+    assert_eq!(retry_delay_from(Some("0")), 0.0);
+    assert_eq!(poll_interval_from(Some("0")), 5.0);
+    assert_eq!(retry_delay_from(Some("0.25")), 0.25);
+    assert_eq!(poll_interval_from(Some("0.25")), 0.25);
+    assert!(std::time::Duration::try_from_secs_f64(retry_delay_from(Some("1e300"))).is_ok());
+    assert!(std::time::Duration::try_from_secs_f64(poll_interval_from(Some("1e300"))).is_ok());
 }

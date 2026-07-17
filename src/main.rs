@@ -10,7 +10,7 @@ fn need(args: &[String], n: usize) -> bool {
 }
 fn run() -> Result<(), Error> {
     let args: Vec<String> = env::args().collect();
-    let c = Config::load();
+    let c = Config::load()?;
     let a = args.get(1).map(String::as_str).unwrap_or("");
     match a{
 "games" if args.get(2).map(String::as_str)==Some("--json")&&need(&args,3)=>json_api::games(&c,false),

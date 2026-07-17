@@ -79,6 +79,44 @@ impl Dir {
         Ok(Self { fd })
     }
 
+    pub fn open_descendant(&self, path: &Path) -> io::Result<Self> {
+        let mut fd = None;
+        let mut parent = self.fd.as_raw_fd();
+        let mut found = false;
+        for component in path.components() {
+            let std::path::Component::Normal(component) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unsafe descendant path",
+                ));
+            };
+            found = true;
+            let child = name(component)?;
+            let raw = unsafe {
+                libc::openat(
+                    parent,
+                    child.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if raw < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let next = unsafe { OwnedFd::from_raw_fd(raw) };
+            parent = next.as_raw_fd();
+            fd = Some(next);
+        }
+        if !found {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "descendant path is empty",
+            ));
+        }
+        Ok(Self {
+            fd: fd.expect("non-empty traversal has a descriptor"),
+        })
+    }
+
     pub fn exists(&self, child: &str) -> io::Result<bool> {
         let child = name(OsStr::new(child))?;
         // SAFETY: output storage and arguments are valid.
@@ -317,5 +355,17 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn descendant_traversal_rejects_nested_symlink() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("real/nested")).expect("real path");
+        std::os::unix::fs::symlink(temp.path().join("real"), temp.path().join("linked"))
+            .expect("symlink");
+        let root = Dir::open_verified(temp.path()).expect("root");
+
+        assert!(root.open_descendant(Path::new("linked/nested")).is_err());
+        assert!(root.open_descendant(Path::new("real/nested")).is_ok());
     }
 }

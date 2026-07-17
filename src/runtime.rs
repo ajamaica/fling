@@ -46,6 +46,8 @@ fn curl(url: &str, out: &Path) -> Result<(), Error> {
             "--location",
             "--proto",
             "=https",
+            "--proto-redir",
+            "=https",
             "--connect-timeout",
             "15",
             "--max-time",
@@ -73,8 +75,7 @@ pub(crate) fn snapshot(config: &Config, appid: u32) -> Result<Snapshot, Error> {
     if appid != APPID {
         return Ok(Snapshot::NotApplicable);
     }
-    let game = steam::game_dir(config, appid)?;
-    let directory = Dir::open_verified(&game)?;
+    let directory = steam::game_dir(config, appid)?;
     let dll = directory.exists("dinput8.dll")?;
     let metadata = directory.exists(".fling-reframework.json")?;
     if !dll && !metadata {
@@ -102,8 +103,8 @@ pub(crate) fn restore(config: &Config, appid: u32, snapshot: Snapshot) -> Result
         Snapshot::NotApplicable => Ok(()),
         Snapshot::Absent => remove(config, appid),
         Snapshot::Managed { dll, metadata } => {
-            let game = steam::game_dir(config, appid)?;
-            install_payload(&game, metadata, &dll, false)
+            let directory = steam::game_dir(config, appid)?;
+            install_payload(&directory, metadata, &dll, false)
         }
     }
 }
@@ -127,13 +128,12 @@ fn recover_pending(directory: &Dir, appid: u32) -> Result<(), Error> {
 }
 
 fn install_payload(
-    game: &Path,
+    directory: &Dir,
     metadata: Metadata,
     dll: &[u8],
     fail_metadata_commit: bool,
 ) -> Result<(), Error> {
-    let directory = Dir::open_verified(game)?;
-    recover_pending(&directory, metadata.appid)?;
+    recover_pending(directory, metadata.appid)?;
     let target_exists = directory.exists("dinput8.dll")?;
     let metadata_exists = directory.exists(".fling-reframework.json")?;
     if target_exists != metadata_exists {
@@ -267,16 +267,15 @@ pub(crate) fn stage_removal(config: &Config, appid: u32) -> Result<(), Error> {
     if appid != APPID {
         return Ok(());
     }
-    let Ok(game) = steam::game_dir(config, appid) else {
+    let Ok(directory) = steam::game_dir(config, appid) else {
         return Ok(());
     };
-    let directory = Dir::open_verified(&game)?;
     let dll = "dinput8.dll";
     let metadata = ".fling-reframework.json";
     let dll_tomb = ".fling-remove-dinput8.dll";
     let metadata_tomb = ".fling-remove-reframework.json";
-    let has_dll = directory.exists(dll)?;
-    let has_metadata = directory.exists(metadata)?;
+    let mut has_dll = directory.exists(dll)?;
+    let mut has_metadata = directory.exists(metadata)?;
     if !has_dll && !has_metadata {
         for tombstone in [dll_tomb, metadata_tomb] {
             if directory.exists(tombstone)? {
@@ -287,14 +286,14 @@ pub(crate) fn stage_removal(config: &Config, appid: u32) -> Result<(), Error> {
         directory.sync()?;
         return Ok(());
     }
+    if directory.exists(dll_tomb)? || directory.exists(metadata_tomb)? {
+        reconcile_removal_directory(&directory, false)?;
+        has_dll = directory.exists(dll)?;
+        has_metadata = directory.exists(metadata)?;
+    }
     if !has_dll || !has_metadata {
         return Err(Error::Message(
             "managed runtime is incomplete; refusing removal".into(),
-        ));
-    }
-    if directory.exists(dll_tomb)? || directory.exists(metadata_tomb)? {
-        return Err(Error::Message(
-            "stale runtime-removal files exist; refusing removal".into(),
         ));
     }
     if directory.exists(".fling-reframework.pending.json")? {
@@ -344,8 +343,7 @@ pub(crate) fn reconcile_removal(config: &Config, appid: u32, committed: bool) ->
     if appid != APPID {
         return Ok(());
     }
-    let game = steam::game_dir(config, appid)?;
-    let directory = Dir::open_verified(&game)?;
+    let directory = steam::game_dir(config, appid)?;
     reconcile_removal_directory(&directory, committed)
 }
 
@@ -417,7 +415,8 @@ mod transaction_tests {
             serde_json::to_vec(&metadata(APPID, old)).expect("metadata"),
         )
         .expect("old metadata");
-        let result = install_payload(temp.path(), metadata(APPID, b"MZ-new"), b"MZ-new", true);
+        let directory = Dir::open_verified(temp.path()).expect("directory");
+        let result = install_payload(&directory, metadata(APPID, b"MZ-new"), b"MZ-new", true);
         assert!(result.is_err());
         assert_eq!(
             fs::read(temp.path().join("dinput8.dll")).expect("restored dll"),
@@ -464,6 +463,45 @@ mod transaction_tests {
             assert!(temp.path().join("dinput8.dll").is_file());
             assert!(temp.path().join(".fling-reframework.json").is_file());
             assert!(!temp.path().join(tombstone).exists());
+        }
+    }
+
+    #[test]
+    fn stage_removal_retries_each_single_runtime_tombstone_state() {
+        for (live, tombstone) in [
+            ("dinput8.dll", ".fling-remove-dinput8.dll"),
+            (".fling-reframework.json", ".fling-remove-reframework.json"),
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let steam = temp.path().join("steam");
+            let game = steam.join("steamapps/common/Game");
+            fs::create_dir_all(&game).expect("game directory");
+            fs::write(
+                steam.join("steamapps/appmanifest_3357650.acf"),
+                r#""appid" "3357650" "name" "Game" "installdir" "Game""#,
+            )
+            .expect("manifest");
+            let dll = b"MZ-runtime";
+            fs::write(game.join("dinput8.dll"), dll).expect("dll");
+            fs::write(
+                game.join(".fling-reframework.json"),
+                serde_json::to_vec(&metadata(APPID, dll)).expect("metadata"),
+            )
+            .expect("metadata file");
+            fs::rename(game.join(live), game.join(tombstone)).expect("partial stage");
+            let config = Config {
+                home: temp.path().join("home"),
+                steam_root: steam,
+                trainers: temp.path().join("Trainers"),
+                proc_root: temp.path().join("proc"),
+            };
+
+            stage_removal(&config, APPID).expect("retry partial staging");
+
+            assert!(!game.join("dinput8.dll").exists());
+            assert!(!game.join(".fling-reframework.json").exists());
+            assert!(game.join(".fling-remove-dinput8.dll").is_file());
+            assert!(game.join(".fling-remove-reframework.json").is_file());
         }
     }
 

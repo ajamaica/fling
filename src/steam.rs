@@ -1,4 +1,4 @@
-use crate::{config::Config, error::Error};
+use crate::{config::Config, error::Error, fs_safe::Dir};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -188,7 +188,7 @@ pub fn game(config: &Config, appid: u32) -> Option<Game> {
     games(config).into_iter().find(|g| g.appid == appid)
 }
 
-pub fn game_dir(config: &Config, appid: u32) -> Result<PathBuf, Error> {
+pub fn game_dir(config: &Config, appid: u32) -> Result<Dir, Error> {
     let g = game(config, appid)
         .ok_or_else(|| Error::Message("installed game directory was not found safely".into()))?;
     let rel = Path::new(&g.install_dir);
@@ -205,29 +205,11 @@ pub fn game_dir(config: &Config, appid: u32) -> Result<PathBuf, Error> {
     let common = common
         .canonicalize()
         .map_err(|_| Error::Message("installed game directory was not found safely".into()))?;
-    let mut candidate = common.clone();
-    for component in rel.components() {
-        let std::path::Component::Normal(part) = component else {
-            return Err(Error::Message(
-                "installed game directory was not found safely".into(),
-            ));
-        };
-        candidate.push(part);
-        let metadata = fs::symlink_metadata(&candidate)
-            .map_err(|_| Error::Message("installed game directory was not found safely".into()))?;
-        if metadata.file_type().is_symlink() {
-            return Err(Error::Message(
-                "installed game directory was not found safely".into(),
-            ));
-        }
-    }
-    let resolved = candidate.canonicalize()?;
-    if !resolved.is_dir() || resolved == common || !resolved.starts_with(&common) {
-        return Err(Error::Message(
-            "installed game directory was not found safely".into(),
-        ));
-    }
-    Ok(resolved)
+    let common_dir = Dir::open_verified(&common)
+        .map_err(|_| Error::Message("installed game directory was not found safely".into()))?;
+    common_dir
+        .open_descendant(rel)
+        .map_err(|_| Error::Message("installed game directory was not found safely".into()))
 }
 
 #[cfg(test)]

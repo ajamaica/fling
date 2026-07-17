@@ -1,4 +1,7 @@
-use fling_cli::{config::Config, json_api::steam_environment_active};
+use fling_cli::{
+    config::Config,
+    json_api::{steam_environment_active, steam_environment_active_for_pids},
+};
 use std::fs;
 
 fn config() -> (tempfile::TempDir, Config) {
@@ -44,4 +47,19 @@ fn rejects_absent_partial_and_unreadable_environment() {
     fs::create_dir_all(config.proc_root.join("76/environ")).expect("unreadable environment kind");
     assert!(!steam_environment_active(&config, 75));
     assert!(!steam_environment_active(&config, 76));
+}
+
+#[test]
+fn status_environment_checks_every_steam_pid() {
+    let (_temp, config) = config();
+    fs::create_dir(config.proc_root.join("81")).expect("irrelevant pid");
+    fs::write(config.proc_root.join("81/environ"), b"DISPLAY=:0\0").expect("environment");
+    fs::create_dir(config.proc_root.join("82")).expect("active pid");
+    fs::write(
+        config.proc_root.join("82/environ"),
+        b"STEAM_COMPAT_LAUNCHER_SERVICE=proton\0",
+    )
+    .expect("environment");
+
+    assert!(steam_environment_active_for_pids(&config, b"81\n82\n"));
 }

@@ -107,6 +107,11 @@ case "${1:-}" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac
         base = "https://github.com/ajamaica/fling/releases/latest/download/"
         self.assertIn(base + "fling-linux-x86_64.tar.gz", log)
         self.assertIn(base + "SHA256SUMS", log)
+        calls = log.splitlines()
+        self.assertEqual(2, len(calls))
+        for call in calls:
+            self.assertIn("--proto =https", call)
+            self.assertIn("--proto-redir =https", call)
 
     def test_bootstrap_uses_validated_configured_release_tag(self):
         result, _, log = self.run_bootstrap("v1.2.3")

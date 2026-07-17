@@ -21,6 +21,13 @@ pub fn steam_environment_active(config: &Config, pid: u32) -> bool {
             .any(|entry| entry == b"STEAM_COMPAT_LAUNCHER_SERVICE=proton")
 }
 
+pub fn steam_environment_active_for_pids(config: &Config, pids: &[u8]) -> bool {
+    String::from_utf8_lossy(pids)
+        .lines()
+        .filter_map(|pid| pid.parse().ok())
+        .any(|pid| steam_environment_active(config, pid))
+}
+
 #[derive(Serialize)]
 struct Games {
     schema_version: u8,
@@ -82,13 +89,7 @@ pub fn status(config: &Config, argv0: &str) {
         .is_ok_and(|output| output.status.success());
     let steam_environment_active = steam_process
         .ok()
-        .and_then(|output| {
-            String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .next()
-                .and_then(|pid| pid.parse().ok())
-        })
-        .is_some_and(|pid| steam_environment_active(config, pid));
+        .is_some_and(|output| steam_environment_active_for_pids(config, &output.stdout));
     let unit = config.home.join(".config/systemd/user/fling-watch.service");
     print_json(&Status {
         schema_version: 1,
