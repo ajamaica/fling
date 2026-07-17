@@ -119,6 +119,20 @@ exec /usr/bin/grep "$@"
         self.assertIn("Library With Spaces", data["games"][1]["library_path"])
         self.assertNotIn("\x1b", p.stdout)
 
+    def test_games_exposes_data_driven_elden_ring_special_settings(self):
+        self.manifest(self.lib2, "1245620", "ELDEN RING", "ELDEN RING Game")
+
+        data = self.payload(self.invoke("games", "--json", check=True))
+        games = {game["appid"]: game for game in data["games"]}
+
+        self.assertEqual(90, games[1245620]["trainer_launch_delay_seconds"])
+        self.assertEqual([
+            "Use Windowed mode before activating the trainer.",
+            "Launch without Easy Anti-Cheat (EAC) and stay offline.",
+        ], games[1245620]["trainer_instructions"])
+        self.assertEqual(0, games[20]["trainer_launch_delay_seconds"])
+        self.assertEqual([], games[20]["trainer_instructions"])
+
     def test_installed_uses_same_shape_and_ignores_non_regular_trainer(self):
         good = self.home / "Trainers/20 - Space Game/Trainer.exe"
         good.parent.mkdir(parents=True); good.write_bytes(b"MZ")

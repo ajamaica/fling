@@ -1,4 +1,4 @@
-use crate::{config::Config, error::Error, fs_safe::Dir};
+use crate::{config::Config, error::Error, fs_safe::Dir, game_profiles};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -15,6 +15,8 @@ pub struct Game {
     pub trainer_installed: bool,
     pub trainer_path: Option<String>,
     pub running: bool,
+    pub trainer_launch_delay_seconds: u64,
+    pub trainer_instructions: Vec<String>,
 }
 
 pub fn vdf_values(text: &str) -> Vec<(String, String)> {
@@ -105,6 +107,7 @@ pub fn games(config: &Config) -> Vec<Game> {
                 continue;
             };
             let trainer = find_trainer(config, appid);
+            let profile = game_profiles::for_appid(appid);
             result.insert(
                 appid,
                 Game {
@@ -115,6 +118,14 @@ pub fn games(config: &Config) -> Vec<Game> {
                     trainer_installed: trainer.is_some(),
                     trainer_path: trainer.map(|p| p.to_string_lossy().into()),
                     running: false,
+                    trainer_launch_delay_seconds: profile
+                        .map(|profile| profile.trainer_launch_delay_seconds)
+                        .unwrap_or_default(),
+                    trainer_instructions: profile
+                        .into_iter()
+                        .flat_map(|profile| profile.trainer_instructions.iter())
+                        .map(|instruction| (*instruction).to_owned())
+                        .collect(),
                 },
             );
         }

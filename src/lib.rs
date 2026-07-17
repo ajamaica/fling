@@ -3,6 +3,7 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub(crate) mod fs_safe;
+pub mod game_profiles;
 pub mod install;
 pub mod json_api;
 pub mod process;
