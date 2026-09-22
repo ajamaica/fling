@@ -267,6 +267,9 @@ fn download(game: &steam::Game, dest: &Path) -> Result<(String, String), Error> 
             "536870912",
             "-A",
             UA,
+            // flingtrainer.com answers 403 to download links without a Referer.
+            "--referer",
+            &page,
             &url,
             "-o",
         ],
