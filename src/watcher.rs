@@ -406,10 +406,14 @@ pub fn watch(config: &Config) -> Result<(), Error> {
             let launch_delay = game_profiles::for_appid(id)
                 .map(|profile| Duration::from_secs(profile.trainer_launch_delay_seconds))
                 .unwrap_or_default();
+            let plan = wemod::plan(config, id);
+            let already_running = !plan.is_empty()
+                && (plan.trainer.is_none() || trainer_running(id))
+                && (plan.wemod.is_none() || wemod::running(config, id));
             match state.observe_at(
                 &service.key,
-                crate::steam::find_trainer(config, id).is_some() || wemod::launchable(config, id),
-                trainer_running(id) || wemod::running(config, id),
+                !plan.is_empty(),
+                already_running,
                 readiness,
                 observed_at,
                 launch_delay,

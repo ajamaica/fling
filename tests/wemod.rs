@@ -1,4 +1,7 @@
-use fling_cli::{config::Config, wemod};
+use fling_cli::{
+    config::Config,
+    wemod::{self, Mode},
+};
 use std::{fs, path::Path};
 
 fn fixture() -> (tempfile::TempDir, Config) {
@@ -68,12 +71,31 @@ fn prefers_newest_app_in_game_prefix_over_shared_copy() {
 }
 
 #[test]
-fn launchable_requires_enabled_and_installed() {
+fn plan_runs_wemod_alongside_or_instead_of_the_trainer_per_game() {
     let (_temp, config) = fixture();
+    let trainer = config.trainers.join("42 - Answer/Trainer.exe");
+    fs::create_dir_all(trainer.parent().expect("parent")).expect("trainer dir");
+    fs::write(&trainer, b"MZ").expect("trainer");
+    let exe = wemod::shared_dir(&config).join("app-1.0.0/WeMod.exe");
     app(&wemod::shared_dir(&config), "1.0.0");
-    assert!(!wemod::launchable(&config, 42));
-    wemod::set_enabled(&config, 42, true).expect("enable");
-    assert!(wemod::launchable(&config, 42));
+
+    let plan = wemod::plan(&config, 42);
+    assert_eq!((plan.trainer.as_ref(), plan.wemod), (Some(&trainer), None));
+
+    wemod::set_mode(&config, 42, Some(Mode::Alongside)).expect("alongside");
+    let plan = wemod::plan(&config, 42);
+    assert_eq!(
+        (plan.trainer.as_ref(), plan.wemod.as_ref()),
+        (Some(&trainer), Some(&exe))
+    );
+
+    wemod::set_mode(&config, 42, Some(Mode::Only)).expect("only");
+    assert_eq!(wemod::mode(&config, 42), Some(Mode::Only));
+    let plan = wemod::plan(&config, 42);
+    assert_eq!((plan.trainer, plan.wemod.as_ref()), (None, Some(&exe)));
+
+    fs::remove_dir_all(wemod::shared_dir(&config)).expect("remove wemod");
+    assert!(wemod::plan(&config, 42).is_empty());
 }
 
 #[test]

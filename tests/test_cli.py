@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -797,7 +798,7 @@ esac
         setup = self.invoke("setup", "30")
         self.assertNotIn("no trainer downloaded", setup.stdout)
 
-    def test_wemod_enabled_game_launches_wemod_instead_of_trainer(self):
+    def test_wemod_runs_alongside_or_instead_of_trainer_per_game(self):
         trainer = self.home / "Trainers/20 - Space Game/Trainer.exe"
         trainer.parent.mkdir(parents=True); trainer.write_bytes(b"MZ")
         prefix = self.lib2 / "steamapps/compatdata/20/pfx"
@@ -806,24 +807,35 @@ esac
         self.env["FLING_PROC_ROOT"] = str(self.tmp / "proc")
         (self.tmp / "proc").mkdir()
         launch_log = self.tmp / "launch.log"
-        self.command("protontricks-launch", f'printf "%s\\n" "$@" > "{launch_log}"\n')
+        self.command("protontricks-launch", f'printf "%s\\n" "${{@: -1}}" >> "{launch_log}"\n')
         self.command("pgrep", "exit 1\n")
         self.command("busctl", "exit 1\n")
 
-        self.assertNotIn("usage", self.invoke("wemod", "enable", "20", check=True).stderr)
-        games = {g["appid"]: g for g in self.payload(self.invoke("games", "--json", check=True))["games"]}
-        self.assertTrue(games[20]["wemod_enabled"])
-        self.assertFalse(games[10]["wemod_enabled"])
-        self.assertIn("20\tSpace Game\tready", self.invoke("wemod", "status", check=True).stdout)
+        def launched(expected):
+            self.invoke("run", "20", check=True)
+            # WeMod starts in the background, so its launch may land just after run returns.
+            for _ in range(50):
+                lines = launch_log.read_text().splitlines() if launch_log.exists() else []
+                if len(lines) >= len(expected): break
+                time.sleep(0.1)
+            launch_log.unlink()
+            return sorted(lines)
 
-        run = self.invoke("run", "20")
-        self.assertEqual(0, run.returncode, run.stderr)
-        self.assertIn("Launching WeMod", run.stdout)
-        self.assertEqual(str(wemod), launch_log.read_text().splitlines()[-1])
+        self.assertEqual([str(trainer)], launched([trainer]))
+
+        self.invoke("wemod", "enable", "20", check=True)
+        games = {g["appid"]: g for g in self.payload(self.invoke("games", "--json", check=True))["games"]}
+        self.assertTrue(games[20]["wemod_enabled"]); self.assertEqual("alongside", games[20]["wemod_mode"])
+        self.assertFalse(games[10]["wemod_enabled"]); self.assertIsNone(games[10]["wemod_mode"])
+        self.assertIn("20\tSpace Game\talongside\tready", self.invoke("wemod", "status", check=True).stdout)
+        self.assertEqual(sorted([str(trainer), str(wemod)]), launched([trainer, wemod]))
+
+        self.invoke("wemod", "enable", "20", "--only", check=True)
+        self.assertIn("\tonly\t", self.invoke("wemod", "status", check=True).stdout)
+        self.assertEqual([str(wemod)], launched([wemod]))
 
         self.invoke("wemod", "disable", "20", check=True)
-        self.invoke("run", "20", check=True)
-        self.assertEqual(str(trainer), launch_log.read_text().splitlines()[-1])
+        self.assertEqual([str(trainer)], launched([trainer]))
 
     def test_wemod_enabled_without_install_reports_setup_command(self):
         (self.steam / "steamapps/compatdata/10/pfx").mkdir(parents=True)

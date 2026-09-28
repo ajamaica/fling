@@ -18,6 +18,7 @@ pub struct Game {
     pub trainer_launch_delay_seconds: u64,
     pub trainer_instructions: Vec<String>,
     pub wemod_enabled: bool,
+    pub wemod_mode: Option<&'static str>,
 }
 
 pub fn vdf_values(text: &str) -> Vec<(String, String)> {
@@ -77,7 +78,7 @@ pub fn libraries(config: &Config) -> Vec<PathBuf> {
 
 pub fn games(config: &Config) -> Vec<Game> {
     let mut result = BTreeMap::new();
-    let wemod_appids = wemod::enabled_appids(config);
+    let wemod_modes = wemod::modes(config);
     for lib in libraries(config) {
         let Ok(entries) = fs::read_dir(lib.join("steamapps")) else {
             continue;
@@ -128,7 +129,8 @@ pub fn games(config: &Config) -> Vec<Game> {
                         .flat_map(|profile| profile.trainer_instructions.iter())
                         .map(|instruction| (*instruction).to_owned())
                         .collect(),
-                    wemod_enabled: wemod_appids.contains(&appid),
+                    wemod_enabled: wemod_modes.contains_key(&appid),
+                    wemod_mode: wemod_modes.get(&appid).map(|mode| mode.as_str()),
                 },
             );
         }

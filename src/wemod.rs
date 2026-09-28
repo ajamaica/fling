@@ -3,7 +3,7 @@
 //! Fling never downloads WeMod; it only launches an existing install at boot.
 use crate::{config::Config, error::Error, install, steam};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -22,27 +22,66 @@ pub fn shared_dir(config: &Config) -> PathBuf {
     config.home.join(".local/share/fling/wemod")
 }
 
-pub fn enabled_appids(config: &Config) -> BTreeSet<u32> {
+/// How WeMod runs for a game that has it enabled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    /// WeMod starts together with the FLiNG trainer (when one is installed).
+    Alongside,
+    /// WeMod starts and the FLiNG trainer is skipped.
+    Only,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Alongside => "alongside",
+            Mode::Only => "only",
+        }
+    }
+}
+
+/// Per-game WeMod settings: one `<appid>` or `<appid> only` per line.
+pub fn modes(config: &Config) -> BTreeMap<u32, Mode> {
     fs::read_to_string(enabled_file(config))
         .map(|text| {
             text.lines()
-                .filter_map(|line| line.trim().parse().ok())
+                .filter_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    let appid = fields.next()?.parse().ok()?;
+                    let mode = match fields.next() {
+                        None => Mode::Alongside,
+                        Some("only") => Mode::Only,
+                        Some(_) => return None,
+                    };
+                    Some((appid, mode))
+                })
                 .collect()
         })
         .unwrap_or_default()
 }
 
+pub fn enabled_appids(config: &Config) -> BTreeSet<u32> {
+    modes(config).into_keys().collect()
+}
+
+pub fn mode(config: &Config, appid: u32) -> Option<Mode> {
+    modes(config).get(&appid).copied()
+}
+
 pub fn enabled(config: &Config, appid: u32) -> bool {
-    enabled_appids(config).contains(&appid)
+    mode(config, appid).is_some()
 }
 
 pub fn set_enabled(config: &Config, appid: u32, enable: bool) -> Result<(), Error> {
-    let mut appids = enabled_appids(config);
-    if enable {
-        appids.insert(appid);
-    } else {
-        appids.remove(&appid);
-    }
+    set_mode(config, appid, enable.then_some(Mode::Alongside))
+}
+
+pub fn set_mode(config: &Config, appid: u32, mode: Option<Mode>) -> Result<(), Error> {
+    let mut modes = modes(config);
+    match mode {
+        Some(mode) => modes.insert(appid, mode),
+        None => modes.remove(&appid),
+    };
     let path = enabled_file(config);
     let parent = path
         .parent()
@@ -51,14 +90,40 @@ pub fn set_enabled(config: &Config, appid: u32, enable: bool) -> Result<(), Erro
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     writeln!(
         temp,
-        "# Managed by Fling. Steam app IDs that launch WeMod at boot."
+        "# Managed by Fling. Steam app IDs that launch WeMod at boot (\"only\" skips the FLiNG trainer)."
     )?;
-    for appid in appids {
-        writeln!(temp, "{appid}")?;
+    for (appid, mode) in modes {
+        match mode {
+            Mode::Alongside => writeln!(temp, "{appid}")?,
+            Mode::Only => writeln!(temp, "{appid} only")?,
+        }
     }
     temp.persist(&path)
         .map_err(|error| Error::Io(error.error))?;
     Ok(())
+}
+
+/// What `fling run` / the watcher start for a game.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Plan {
+    pub trainer: Option<PathBuf>,
+    pub wemod: Option<PathBuf>,
+}
+
+impl Plan {
+    pub fn is_empty(&self) -> bool {
+        self.trainer.is_none() && self.wemod.is_none()
+    }
+}
+
+pub fn plan(config: &Config, appid: u32) -> Plan {
+    let mode = mode(config, appid);
+    Plan {
+        trainer: (mode != Some(Mode::Only))
+            .then(|| steam::find_trainer(config, appid))
+            .flatten(),
+        wemod: mode.and_then(|_| find_exe(config, appid)),
+    }
 }
 
 fn version_of(dir_name: &str) -> Option<Vec<u32>> {
@@ -113,11 +178,6 @@ pub fn find_exe(config: &Config, appid: u32) -> Option<PathBuf> {
         .or_else(|| newest_app_exe(&shared_dir(config)))
 }
 
-/// True when WeMod is enabled for the game and an executable is available.
-pub fn launchable(config: &Config, appid: u32) -> bool {
-    enabled(config, appid) && find_exe(config, appid).is_some()
-}
-
 /// Detects a WeMod process that belongs to this game, either through the
 /// Proton app ID in its environment or through its prefix path.
 pub fn running(config: &Config, appid: u32) -> bool {
@@ -157,11 +217,15 @@ fn describe(config: &Config, appid: u32) -> String {
     }
 }
 
-pub fn enable(config: &Config, query: &str) -> Result<(), Error> {
+pub fn enable(config: &Config, query: &str, mode: Mode) -> Result<(), Error> {
     let game = install::resolve(config, query)?;
-    set_enabled(config, game.appid, true)?;
+    set_mode(config, game.appid, Some(mode))?;
+    let how = match mode {
+        Mode::Alongside => "it will launch together with the FLiNG trainer",
+        Mode::Only => "it will launch instead of the FLiNG trainer",
+    };
     println!(
-        ">>> WeMod enabled for {} (appid {}) — it will launch instead of the FLiNG trainer",
+        ">>> WeMod enabled for {} (appid {}) — {how}",
         game.name, game.appid
     );
     println!(">>> {}", describe(config, game.appid));
@@ -179,16 +243,20 @@ pub fn disable(config: &Config, query: &str) -> Result<(), Error> {
 }
 
 pub fn status(config: &Config) {
-    let appids = enabled_appids(config);
+    let appids = modes(config);
     if appids.is_empty() {
         println!("(no games use WeMod)");
         return;
     }
-    for appid in appids {
+    for (appid, mode) in appids {
         let name = steam::game(config, appid)
             .map(|game| game.name)
             .unwrap_or_else(|| "(not installed)".into());
-        println!("{appid}\t{name}\t{}", describe(config, appid));
+        println!(
+            "{appid}\t{name}\t{}\t{}",
+            mode.as_str(),
+            describe(config, appid)
+        );
     }
 }
 
@@ -242,7 +310,9 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
     if !status.success() {
         return Err(Error::Message("WeMod installer failed".into()));
     }
-    set_enabled(config, game.appid, true)?;
+    if !enabled(config, game.appid) {
+        set_mode(config, game.appid, Some(Mode::Alongside))?;
+    }
     println!(
         ">>> WeMod enabled for {} — {}",
         game.name,
