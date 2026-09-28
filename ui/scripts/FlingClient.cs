@@ -11,12 +11,16 @@ public sealed class FlingClient
     // Trainer and optional runtime-support downloads each have a bounded
     // network window; this deadline covers both plus discovery and commit.
     public static readonly TimeSpan InstallTimeout = TimeSpan.FromMinutes(10);
+    // Covers the WeMod download plus its installer, which runs under Proton.
+    public static readonly TimeSpan WemodInstallTimeout = TimeSpan.FromMinutes(20);
     public static readonly TimeSpan RemoveTimeout = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan RestartTimeout = TimeSpan.FromSeconds(60);
     private readonly AppLogger _log;
     private readonly string _path;
     private readonly bool _mock = Environment.GetEnvironmentVariable("FLING_UI_MOCK") == "1";
     private bool _mockInstalled;
+    private bool _mockWemodInstalled;
+    private readonly Dictionary<int, string> _mockChoices = [];
 
     public FlingClient(AppLogger log)
     {
@@ -40,6 +44,16 @@ public sealed class FlingClient
     {
         if (_mock) { await Task.Delay(350, ct); _mockInstalled = false; return MockCommand("remove", appId, true); }
         return await RunAsync<CommandResponse>(["remove", appId.ToString(), "--json"], RemoveTimeout, ct);
+    }
+    public async Task<WemodResponse> SetTrainerChoiceAsync(int appId, string choice, CancellationToken ct = default)
+    {
+        if (_mock) { await Task.Delay(150, ct); _mockChoices[appId] = choice; return MockWemod("use", appId, "Choice saved"); }
+        return await RunAsync<WemodResponse>(["use", appId.ToString(), choice, "--json"], GamesTimeout, ct);
+    }
+    public async Task<WemodResponse> InstallWemodAsync(int appId, CancellationToken ct = default)
+    {
+        if (_mock) { await Task.Delay(900, ct); _mockWemodInstalled = true; return MockWemod("wemod_install", appId, "WeMod installed"); }
+        return await RunAsync<WemodResponse>(["wemod", "install", appId.ToString(), "--json"], WemodInstallTimeout, ct);
     }
     public Task<CommandResponse> RefreshAsync(int appId, CancellationToken ct = default) => _mock
         ? Task.FromResult(MockCommand("refresh", appId, true))
@@ -124,10 +138,15 @@ public sealed class FlingClient
 
     private GameListResponse MockGames() => new(1,
     [
-        new(367520, "Hollow Knight", "Hollow Knight", "~/.local/share/Steam", _mockInstalled, _mockInstalled ? "~/Trainers/367520 - Hollow Knight/Trainer.exe" : null, false),
-        new(413150, "Stardew Valley", "Stardew Valley", "~/.local/share/Steam", true, "~/Trainers/413150 - Stardew Valley/Trainer.exe", true),
-        new(620, "Portal 2", "Portal 2", "~/.local/share/Steam", false, null, false)
+        new(367520, "Hollow Knight", "Hollow Knight", "~/.local/share/Steam", _mockInstalled, _mockInstalled ? "~/Trainers/367520 - Hollow Knight/Trainer.exe" : null, false,
+            TrainerChoice: MockChoice(367520), WemodInstalled: _mockWemodInstalled),
+        new(413150, "Stardew Valley", "Stardew Valley", "~/.local/share/Steam", true, "~/Trainers/413150 - Stardew Valley/Trainer.exe", true,
+            TrainerChoice: MockChoice(413150), WemodInstalled: _mockWemodInstalled),
+        new(620, "Portal 2", "Portal 2", "~/.local/share/Steam", false, null, false,
+            TrainerChoice: MockChoice(620), WemodInstalled: _mockWemodInstalled)
     ]);
+    private string MockChoice(int appId) => _mockChoices.GetValueOrDefault(appId, TrainerChoices.Fling);
+    private WemodResponse MockWemod(string op, int id, string message) => new(1, true, op, id, "Mock game", MockChoice(id), _mockWemodInstalled, message);
     private static CommandResponse MockCommand(string op, int id, bool ok) => new(1, ok, op, id, "Mock game", null,
         op == "remove" ? "Trainer removed successfully" : op == "install" ? "Trainer installed successfully" : "Game state refreshed", null, false);
 }

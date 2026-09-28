@@ -933,6 +933,43 @@ printf 'MZ' > "{app.parent}/Update.exe"
         self.invoke("use", "10", "both", check=True)
         self.assertEqual(1, len(curl_log.read_text().splitlines()))
 
+    def test_wemod_json_commands_keep_stdout_pure_json(self):
+        prefix = self.lib2 / "steamapps/compatdata/20/pfx"; prefix.mkdir(parents=True)
+        self.mock_wemod_installer(prefix)
+        # The fake installer is noisy on stdout; JSON mode must route that to stderr.
+        noisy = (self.bin / "protontricks-launch").read_text().replace("set -eu\n", "set -eu\necho installer-noise\n")
+        (self.bin / "protontricks-launch").write_text(noisy)
+        games = {g["appid"]: g for g in self.payload(self.invoke("games", "--json", check=True))["games"]}
+        self.assertFalse(games[20]["wemod_installed"]); self.assertEqual("fling", games[20]["trainer_choice"])
+
+        used = self.payload(self.invoke("use", "20", "wemod", "--json", check=True))
+        self.assertEqual(("use", 20, "wemod", False), (used["operation"], used["appid"], used["trainer_choice"], used["wemod_installed"]))
+        self.assertFalse((self.home / ".local/share/fling/wemod").exists(), "use --json must not download")
+
+        p = self.invoke("wemod", "install", "20", "--json", check=True)
+        installed = self.payload(p)
+        self.assertTrue(installed["success"]); self.assertTrue(installed["wemod_installed"])
+        self.assertEqual("wemod_install", installed["operation"])
+        self.assertIn("installer-noise", p.stderr)
+        games = {g["appid"]: g for g in self.payload(self.invoke("games", "--json", check=True))["games"]}
+        self.assertTrue(games[20]["wemod_installed"])
+        # The shared install is visible to every game.
+        self.assertTrue(games[10]["wemod_installed"])
+
+        both = self.payload(self.invoke("use", "20", "both", "--json", check=True))
+        self.assertEqual("both", both["trainer_choice"])
+        bad = self.invoke("use", "20", "nope", "--json")
+        self.assertEqual(2, bad.returncode); self.assertEqual("invalid_args", self.payload(bad)["error_code"])
+        missing = self.invoke("wemod", "install", "999", "--json")
+        self.assertEqual(3, missing.returncode); self.assertEqual("game_missing", self.payload(missing)["error_code"])
+
+    def test_wemod_install_json_reports_network_failure(self):
+        (self.lib2 / "steamapps/compatdata/20/pfx").mkdir(parents=True)
+        self.command("curl", "exit 22\n")
+        p = self.invoke("wemod", "install", "20", "--json")
+        self.assertEqual(5, p.returncode)
+        self.assertEqual("network_error", self.payload(p)["error_code"])
+
     def test_wemod_install_rejects_non_windows_download(self):
         prefix = self.lib2 / "steamapps/compatdata/20/pfx"; prefix.mkdir(parents=True)
         self.mock_wemod_installer(prefix, detected="HTML document, ASCII text")

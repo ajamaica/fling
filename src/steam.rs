@@ -19,6 +19,7 @@ pub struct Game {
     pub trainer_instructions: Vec<String>,
     pub wemod_enabled: bool,
     pub trainer_choice: &'static str,
+    pub wemod_installed: bool,
 }
 
 pub fn vdf_values(text: &str) -> Vec<(String, String)> {
@@ -110,6 +111,7 @@ pub fn games(config: &Config) -> Vec<Game> {
                 continue;
             };
             let trainer = find_trainer(config, appid);
+            let wemod_available = wemod::find_exe_in_library(config, appid, &lib).is_some();
             let profile = game_profiles::for_appid(appid);
             result.insert(
                 appid,
@@ -135,6 +137,7 @@ pub fn games(config: &Config) -> Vec<Game> {
                         .copied()
                         .unwrap_or(wemod::Choice::Fling)
                         .as_str(),
+                    wemod_installed: wemod_available,
                 },
             );
         }

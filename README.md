@@ -29,6 +29,8 @@ fling status --json
 fling install <appid> --json
 fling remove <appid> --json
 fling refresh <appid> --json
+fling use <appid> fling|wemod|both --json
+fling wemod install <appid> --json
 ```
 
 `refresh` is intentionally local and safe: it re-reads the selected game's Steam manifest and current trainer state. It does not contact the network or modify files. JSON stdout contains JSON only; diagnostics use stderr. Exit codes are 0 success, 1 general, 2 invalid arguments, 3 missing game, 4 missing remote trainer, 5 network/download, 6 invalid file, 7 missing local trainer, 8 missing dependency, 9 unsafe path, 10 Steam configuration, 11 game-specific runtime installation failure, and 12 managed runtime removal conflict.
@@ -47,6 +49,8 @@ fling use <game> fling        # FLiNG trainer
 fling use <game> wemod        # WeMod
 fling use <game> both         # FLiNG trainer and WeMod together
 ```
+
+In the UI, open a game and use the **Start with game: FLiNG / WeMod / Both** buttons, or **Install WeMod** (**Update WeMod** once installed). Choosing WeMod or Both before WeMod is installed installs it first.
 
 WeMod is a Windows app with its own account. Fling installs it for you, **once**, and every game shares that install and your sign-in:
 

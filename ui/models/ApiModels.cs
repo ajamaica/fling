@@ -12,7 +12,9 @@ public sealed record SteamGame(
     [property: JsonPropertyName("trainer_path")] string? TrainerPath,
     [property: JsonPropertyName("running")] bool Running,
     [property: JsonPropertyName("trainer_launch_delay_seconds")] int TrainerLaunchDelaySeconds = 0,
-    [property: JsonPropertyName("trainer_instructions")] IReadOnlyList<string>? TrainerInstructions = null);
+    [property: JsonPropertyName("trainer_instructions")] IReadOnlyList<string>? TrainerInstructions = null,
+    [property: JsonPropertyName("trainer_choice")] string TrainerChoice = "fling",
+    [property: JsonPropertyName("wemod_installed")] bool WemodInstalled = false);
 
 public sealed record GameListResponse(
     [property: JsonPropertyName("schema_version")] int SchemaVersion,
@@ -28,6 +30,16 @@ public sealed record CommandResponse(
     [property: JsonPropertyName("message")] string Message,
     [property: JsonPropertyName("error_code")] string? ErrorCode,
     [property: JsonPropertyName("restart_required")] bool RestartRequired);
+
+public sealed record WemodResponse(
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("success")] bool Success,
+    [property: JsonPropertyName("operation")] string Operation,
+    [property: JsonPropertyName("appid")] int AppId,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("trainer_choice")] string TrainerChoice,
+    [property: JsonPropertyName("wemod_installed")] bool WemodInstalled,
+    [property: JsonPropertyName("message")] string Message);
 
 public sealed record FlingStatus(
     [property: JsonPropertyName("schema_version")] int SchemaVersion,

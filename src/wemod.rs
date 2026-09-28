@@ -1,8 +1,36 @@
 //! Optional WeMod support. WeMod is a Windows app that must run inside the
 //! game's own Proton prefix and container to see the game process. One install
 //! and one signed-in profile are shared by every game.
-use crate::{config::Config, error::Error, install, steam};
+use crate::{
+    config::Config,
+    error::{Error, json_failure},
+    install, steam,
+};
+use serde::Serialize;
 use sha2::Digest;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// In JSON mode stdout carries only the JSON result, so progress text and
+/// installer output go to stderr instead.
+static JSON_MODE: AtomicBool = AtomicBool::new(false);
+
+macro_rules! say {
+    ($($arg:tt)*) => {
+        if JSON_MODE.load(Ordering::Relaxed) {
+            eprintln!($($arg)*)
+        } else {
+            println!($($arg)*)
+        }
+    };
+}
+
+fn child_stdout() -> std::process::Stdio {
+    if JSON_MODE.load(Ordering::Relaxed) {
+        std::io::stderr().into()
+    } else {
+        std::process::Stdio::inherit()
+    }
+}
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -185,11 +213,12 @@ pub fn newest_app_exe(root: &Path) -> Option<PathBuf> {
 /// Candidate Proton prefixes for a game: its own library first, then the
 /// default Steam root.
 pub fn prefixes(config: &Config, appid: u32) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(game) = steam::game(config, appid) {
-        roots.push(PathBuf::from(game.library_path));
-    }
-    roots.push(config.steam_root.clone());
+    let library = steam::game(config, appid).map(|game| PathBuf::from(game.library_path));
+    prefixes_in(config, appid, library.as_deref())
+}
+
+fn prefixes_in(config: &Config, appid: u32, library: Option<&Path>) -> Vec<PathBuf> {
+    let roots = library.into_iter().chain([config.steam_root.as_path()]);
     let mut result: Vec<PathBuf> = Vec::new();
     for root in roots {
         let prefix = root.join(format!("steamapps/compatdata/{appid}/pfx"));
@@ -203,7 +232,17 @@ pub fn prefixes(config: &Config, appid: u32) -> Vec<PathBuf> {
 /// The newest WeMod available to a game: its own prefix install or the shared
 /// one. On equal versions the shared install wins, so updates are shared too.
 pub fn find_exe(config: &Config, appid: u32) -> Option<PathBuf> {
-    prefixes(config, appid)
+    newest_for(config, &prefixes(config, appid))
+}
+
+/// Like `find_exe` for a game whose library is already known (used while
+/// listing games, which `prefixes` itself depends on).
+pub fn find_exe_in_library(config: &Config, appid: u32, library: &Path) -> Option<PathBuf> {
+    newest_for(config, &prefixes_in(config, appid, Some(library)))
+}
+
+fn newest_for(config: &Config, prefixes: &[PathBuf]) -> Option<PathBuf> {
+    prefixes
         .iter()
         .map(|prefix| prefix.join(PREFIX_APP_DIR))
         .chain([shared_dir(config)])
@@ -280,7 +319,7 @@ pub fn find_or_import(config: &Config, appid: u32) -> Option<PathBuf> {
     }
     for game in steam::games(config) {
         if let Err(error) = import_install(config, game.appid) {
-            println!(
+            say!(
                 ">>> WARNING: could not share {}'s WeMod install: {error}",
                 game.name
             );
@@ -332,7 +371,7 @@ pub fn share_profile(config: &Config, appid: u32) -> Result<(), Error> {
                 let _ = fs::remove_dir_all(&partial);
                 copy_tree(&link, &partial)?;
                 fs::rename(&partial, &shared)?;
-                println!(
+                say!(
                     ">>> Using this game's WeMod sign-in for all games ({})",
                     shared.display()
                 );
@@ -406,16 +445,16 @@ pub fn choose(config: &Config, query: &str, value: Option<&str>) -> Result<(), E
         set_choice(config, game.appid, choice)?;
     }
     let choice = choice(config, game.appid);
-    println!("{}\t{}\t{}", game.appid, game.name, choice.as_str());
+    say!("{}\t{}\t{}", game.appid, game.name, choice.as_str());
     if choice.uses_fling() && steam::find_trainer(config, game.appid).is_none() {
-        println!(
+        say!(
             ">>> FLiNG trainer not installed — run: fling get {}",
             game.appid
         );
     }
     if choice.uses_wemod() && find_or_import(config, game.appid).is_none() {
         if value.is_some() && !prefixes(config, game.appid).is_empty() {
-            println!(">>> WeMod is not installed yet — installing it automatically...");
+            say!(">>> WeMod is not installed yet — installing it automatically...");
             return install(config, &game.appid.to_string(), false).map_err(|error| {
                 Error::Message(format!(
                     "{error} — the choice was saved; retry with: fling wemod install {}",
@@ -423,7 +462,7 @@ pub fn choose(config: &Config, query: &str, value: Option<&str>) -> Result<(), E
                 ))
             });
         }
-        println!(
+        say!(
             ">>> WeMod not installed — launch the game once, then run: fling wemod install {}",
             game.appid
         );
@@ -432,18 +471,18 @@ pub fn choose(config: &Config, query: &str, value: Option<&str>) -> Result<(), E
 }
 
 pub fn status(config: &Config) {
-    println!("install\t{}", shared_dir(config).display());
-    println!("sign-in\t{}", profile_dir(config).display());
+    say!("install\t{}", shared_dir(config).display());
+    say!("sign-in\t{}", profile_dir(config).display());
     let choices = choices(config);
     if choices.is_empty() {
-        println!("(no games use WeMod)");
+        say!("(no games use WeMod)");
         return;
     }
     for (appid, choice) in choices {
         let name = steam::game(config, appid)
             .map(|game| game.name)
             .unwrap_or_else(|| "(not installed)".into());
-        println!(
+        say!(
             "{appid}\t{name}\t{}\t{}",
             choice.as_str(),
             describe(config, appid)
@@ -475,11 +514,10 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
     }
     let appid = game.appid.to_string();
     if dotnet {
-        println!(
-            ">>> Installing .NET Framework 4.8 into the game's prefix (this can take a while)..."
-        );
+        say!(">>> Installing .NET Framework 4.8 into the game's prefix (this can take a while)...");
         let status = Command::new("protontricks")
             .args([appid.as_str(), "-q", "dotnet48"])
+            .stdout(child_stdout())
             .status()
             .map_err(|_| Error::DependencyMissing("protontricks".into()))?;
         if !status.success() {
@@ -488,32 +526,33 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
     }
     // Link the shared profile first so the sign-in below is shared by all games.
     share_profile(config, game.appid)?;
-    println!(
+    say!(
         ">>> Running the WeMod installer in the Proton prefix of {}...",
         game.name
     );
-    println!(">>> Sign in when WeMod opens, then close it.");
+    say!(">>> Sign in when WeMod opens, then close it.");
     let status = Command::new("protontricks-launch")
         .args(["--appid", appid.as_str()])
         .arg(installer)
+        .stdout(child_stdout())
         .status()
         .map_err(|_| Error::DependencyMissing("protontricks-launch".into()))?;
     if !status.success() {
         return Err(Error::Message("WeMod installer failed".into()));
     }
     if import_install(config, game.appid)? {
-        println!(
+        say!(
             ">>> Shared the WeMod install with all games ({})",
             shared_dir(config).display()
         );
     }
-    println!(
+    say!(
         ">>> WeMod for {}: {}",
         game.name,
         describe(config, game.appid)
     );
-    println!(">>> Other games reuse this install and sign-in — just run: fling use <game> wemod");
-    println!(
+    say!(">>> Other games reuse this install and sign-in — just run: fling use <game> wemod");
+    say!(
         ">>> Choose what starts with the game: fling use {} fling|wemod|both (now: {})",
         game.appid,
         choice(config, game.appid).as_str()
@@ -537,7 +576,7 @@ pub fn install(config: &Config, query: &str, dotnet: bool) -> Result<(), Error> 
         .tempdir_in(&cache)?;
     let installer = stage.path().join("WeMod-Setup.exe");
     let url = std::env::var("FLING_WEMOD_URL").unwrap_or_else(|_| DOWNLOAD_URL.into());
-    println!(">>> Downloading the WeMod installer from {url}...");
+    say!(">>> Downloading the WeMod installer from {url}...");
     let status = Command::new("curl")
         .args([
             "--silent",
@@ -560,6 +599,7 @@ pub fn install(config: &Config, query: &str, dotnet: bool) -> Result<(), Error> 
         ])
         .arg(&installer)
         .arg(&url)
+        .stdout(child_stdout())
         .status()
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => Error::DependencyMissing("curl".into()),
@@ -599,4 +639,117 @@ pub fn install(config: &Config, query: &str, dotnet: bool) -> Result<(), Error> 
         serde_json::to_vec_pretty(&metadata)?,
     )?;
     Ok(())
+}
+
+#[derive(Serialize)]
+struct JsonResult {
+    schema_version: u8,
+    success: bool,
+    operation: &'static str,
+    appid: u32,
+    name: String,
+    trainer_choice: &'static str,
+    wemod_installed: bool,
+    message: String,
+}
+
+fn json_game(config: &Config, operation: &str, arg: &str) -> steam::Game {
+    JSON_MODE.store(true, Ordering::Relaxed);
+    let Ok(appid) = arg.parse() else {
+        json_failure(operation, 0, 2, "invalid_args", "appid must be numeric")
+    };
+    steam::game(config, appid).unwrap_or_else(|| {
+        json_failure(
+            operation,
+            appid,
+            3,
+            "game_missing",
+            "Installed Steam game not found",
+        )
+    })
+}
+
+fn json_success(config: &Config, operation: &'static str, game: steam::Game, message: String) {
+    let result = JsonResult {
+        schema_version: 1,
+        success: true,
+        operation,
+        appid: game.appid,
+        trainer_choice: choice(config, game.appid).as_str(),
+        wemod_installed: find_exe(config, game.appid).is_some(),
+        name: game.name,
+        message,
+    };
+    match serde_json::to_string(&result) {
+        Ok(value) => println!("{value}"),
+        Err(error) => json_failure(
+            operation,
+            result.appid,
+            1,
+            "general_error",
+            error.to_string(),
+        ),
+    }
+}
+
+/// `fling use <appid> fling|wemod|both --json`: saves the choice only; the UI
+/// installs WeMod separately so it can show that step.
+pub fn choose_json(config: &Config, arg: &str, value: &str) {
+    let game = json_game(config, "use", arg);
+    let Some(choice) = Choice::parse(value) else {
+        json_failure(
+            "use",
+            game.appid,
+            2,
+            "invalid_args",
+            "choice must be fling, wemod or both",
+        )
+    };
+    if let Err(error) = set_choice(config, game.appid, choice) {
+        json_failure("use", game.appid, 1, "general_error", error.to_string())
+    }
+    // Share an install found in another game's prefix so the UI sees it.
+    if choice.uses_wemod() {
+        find_or_import(config, game.appid);
+    }
+    let message = match choice {
+        Choice::Fling => "FLiNG trainer selected",
+        Choice::Wemod => "WeMod selected",
+        Choice::Both => "FLiNG trainer and WeMod selected",
+    };
+    json_success(config, "use", game, message.into());
+}
+
+/// `fling wemod install <appid> --json`.
+pub fn install_json(config: &Config, arg: &str) {
+    let game = json_game(config, "wemod_install", arg);
+    let appid = game.appid;
+    match install(config, &appid.to_string(), false) {
+        Ok(()) => json_success(
+            config,
+            "wemod_install",
+            game,
+            "WeMod installed — sign in once in the WeMod window; every game shares it".into(),
+        ),
+        Err(Error::Network(message)) => {
+            json_failure("wemod_install", appid, 5, "network_error", message)
+        }
+        Err(Error::InvalidPayload(message)) => {
+            json_failure("wemod_install", appid, 6, "invalid_file", message)
+        }
+        Err(Error::DependencyMissing(name)) => json_failure(
+            "wemod_install",
+            appid,
+            8,
+            "dependency_missing",
+            format!("Missing required dependency: {name}"),
+        ),
+        Err(error) => json_failure(
+            "wemod_install",
+            appid,
+            1,
+            "general_error",
+            error.to_string(),
+        ),
+    }
 }

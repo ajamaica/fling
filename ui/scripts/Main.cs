@@ -21,6 +21,7 @@ public partial class Main : Control
     private int? _restoreFocusAppId;
     private SteamGame? _detailsGame;
     private Label? _detailsPhase;
+    private string? _detailsMessage;
     private static readonly string[] Filters = ["All", "Installed", "Not installed"];
 
     public override void _Ready()
@@ -105,7 +106,7 @@ public partial class Main : Control
         if (!IsInstanceValid(_grid)) return;
         foreach (var child in _grid.GetChildren()) child.QueueFree();
         var query = _search.Text.Trim();
-        var visible = _games.Where(g => (_filter == 0 || (_filter == 1) == g.TrainerInstalled)
+        var visible = _games.Where(g => (_filter == 0 || (_filter == 1) == TrainerChoices.IsReady(g))
             && (query.Length == 0 || GameCardPresentation.For(g).Title.Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
         if (visible.Count == 0)
         {
@@ -201,7 +202,7 @@ public partial class Main : Control
         _root = new VBoxContainer { Name = "Details" }; _root.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect, LayoutPresetMode.Minsize, 44); _root.AddThemeConstantOverride("separation", 22); AddChild(_root);
         var back = Button("‹ Back  [B]", () => { BuildLibrary(); RenderCards(); }); _root.AddChild(back);
         var title = new Label { Text = game.Name }; title.AddThemeFontSizeOverride("font_size", 42); _root.AddChild(title);
-        _root.AddChild(new Label { Text = $"Steam AppID  {game.AppId}\nTrainer  {(game.TrainerInstalled ? "Installed" : "Not installed")}" });
+        _root.AddChild(new Label { Text = $"Steam AppID  {game.AppId}\nFLiNG trainer  {(game.TrainerInstalled ? "Installed" : "Not installed")}\nWeMod  {(game.WemodInstalled ? "Installed (shared by all games)" : "Not installed")}\nStarts with game  {TrainerChoices.Describe(game.TrainerChoice)}" });
         var guidance = GameGuidance.For(game);
         if (guidance is not null)
         {
@@ -215,9 +216,22 @@ public partial class Main : Control
             _root.AddChild(specialSetup);
         }
         if (game.TrainerPath is not null) _root.AddChild(new Label { Text = $"Advanced: {game.TrainerPath}", Modulate = new Color("aeb5bd"), AutowrapMode = TextServer.AutowrapMode.WordSmart });
-        var phase = new Label { Text = "Ready" }; _detailsPhase = phase; _root.AddChild(phase);
+        var phase = new Label { Text = _detailsMessage ?? "Ready", AutowrapMode = TextServer.AutowrapMode.WordSmart }; _detailsMessage = null; _detailsPhase = phase;
+        var busy = _operation is TrainerOperationState.Installing or TrainerOperationState.Removing;
+        var choices = new HBoxContainer(); choices.AddThemeConstantOverride("separation", 12);
+        choices.AddChild(new Label { Text = "Start with game:", VerticalAlignment = VerticalAlignment.Center });
+        var current = TrainerChoices.Normalize(game.TrainerChoice);
+        foreach (var (value, label) in TrainerChoices.Options)
+        {
+            var option = Button(value == current ? $"● {label}" : label, () => _ = ChooseTrainerAsync(game, value, phase));
+            option.Disabled = busy; option.TooltipText = $"Start {TrainerChoices.Describe(value)} when {game.Name} launches"; choices.AddChild(option);
+        }
+        _root.AddChild(choices);
+        _root.AddChild(phase);
         var action = Button(game.TrainerInstalled ? "Remove trainer  [X]" : "Install trainer  [X]", () => _ = ModifyTrainerAsync(game, phase));
-        action.Disabled = _operation is TrainerOperationState.Installing or TrainerOperationState.Removing; _root.AddChild(action);
+        action.Disabled = busy; _root.AddChild(action);
+        var wemod = Button(game.WemodInstalled ? "Update WeMod" : "Install WeMod", () => _ = InstallWemodAsync(game, phase));
+        wemod.Disabled = busy; wemod.TooltipText = "Downloads WeMod once; every game shares the install and your sign-in"; _root.AddChild(wemod);
         back.CallDeferred(Control.MethodName.GrabFocus);
     }
 
@@ -258,6 +272,45 @@ public partial class Main : Control
             values.Text = $"CLI installed: {Yes(s.CliInstalled)}\nWatcher installed: {Yes(s.WatcherInstalled)}\nWatcher active: {Yes(s.WatcherActive)}\nGlobal environment configured: {Yes(s.GlobalEnvironmentConfigured)}\nSteam environment active: {Yes(s.SteamEnvironmentActive)}\nSteam running: {Yes(s.SteamRunning)}\nSteam root: {s.SteamRoot}\nTrainers directory: {s.TrainersDirectory}";
         }
         catch (FlingClientException e) { if (IsInstanceValid(values)) values.Text = e.Message; }
+    }
+
+    private async Task ChooseTrainerAsync(SteamGame game, string choice, Label phase)
+    {
+        await RunWemodOperationAsync(game, phase, "Saving choice…", async () =>
+        {
+            var result = await _client.SetTrainerChoiceAsync(game.AppId, choice);
+            if (!TrainerChoices.UsesWemod(choice) || result.WemodInstalled) return result.Message;
+            // Choosing WeMod before it is installed installs it, like `fling use`.
+            if (IsInstanceValid(phase)) phase.Text = "Downloading and installing WeMod… sign in when the WeMod window opens.";
+            return (await _client.InstallWemodAsync(game.AppId)).Message;
+        });
+    }
+
+    private Task InstallWemodAsync(SteamGame game, Label phase) => RunWemodOperationAsync(game, phase,
+        "Downloading and installing WeMod… sign in when the WeMod window opens.",
+        async () => (await _client.InstallWemodAsync(game.AppId)).Message);
+
+    private async Task RunWemodOperationAsync(SteamGame game, Label phase, string progress, Func<Task<string>> operation)
+    {
+        if (_operation is TrainerOperationState.Installing or TrainerOperationState.Removing) return;
+        _operation = TrainerOperationState.Installing;
+        if (IsInstanceValid(phase)) phase.Text = progress;
+        string message;
+        try
+        {
+            message = await operation();
+            _operation = TrainerOperationState.Succeeded;
+        }
+        catch (FlingClientException e)
+        {
+            _operation = TrainerOperationState.Failed;
+            message = $"{e.Message}\nRetry with the button. Technical detail is available in the log.";
+            _log.Error($"WeMod operation failed: {e.Message}; {e.TechnicalDetail}");
+        }
+        await LoadGamesAsync();
+        if (!IsInsideTree() || _detailsGame?.AppId != game.AppId) return;
+        _detailsMessage = message;
+        ShowDetails(_games.FirstOrDefault(g => g.AppId == game.AppId) ?? game);
     }
 
     private void ConfirmRestartSteam()

@@ -29,6 +29,25 @@ class UiReviewRegressionTest(unittest.TestCase):
         self.assertIn("Special setup", details)
         self.assertIn("AutowrapMode = TextServer.AutowrapMode.WordSmart", details)
 
+    def test_details_offer_wemod_install_and_per_game_choice(self):
+        source = (ROOT / "ui/scripts/Main.cs").read_text()
+        details = re.search(
+            r"private void ShowDetails\(SteamGame game\)(.*?)\n    }\n\n    private async Task ModifyTrainerAsync",
+            source,
+            re.DOTALL,
+        ).group(1)
+        self.assertIn("TrainerChoices.Options", details)
+        self.assertIn("ChooseTrainerAsync(game, value, phase)", details)
+        self.assertIn('"Install WeMod"', details)
+        self.assertIn("InstallWemodAsync(game, phase)", details)
+        client = (ROOT / "ui/scripts/FlingClient.cs").read_text()
+        self.assertIn('["use", appId.ToString(), choice, "--json"]', client)
+        self.assertIn('["wemod", "install", appId.ToString(), "--json"]', client)
+        operation = re.search(
+            r"private async Task RunWemodOperationAsync\(.*?\n    }\n", source, re.DOTALL
+        ).group(0)
+        self.assertRegex(operation, r"(?s)await LoadGamesAsync\(\);\s*if \(!IsInsideTree\(\)")
+
     def test_library_scroll_viewport_reserves_footer_clearance(self):
         source = (ROOT / "ui/scripts/Main.cs").read_text()
 

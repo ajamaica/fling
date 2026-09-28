@@ -35,6 +35,25 @@ var unnamedCard = GameCardPresentation.For(unnamedGame);
 Assert(unnamedCard.Title == "Unknown game (AppID 1245620)", "blank game name did not get a visible title fallback");
 Assert(unnamedCard.AccessibleText.Contains(unnamedCard.Title), "card accessible text omitted the fallback title");
 
+Assert(games.Games[0].TrainerChoice == TrainerChoices.Fling && !games.Games[0].WemodInstalled, "older CLI output did not default to FLiNG");
+Assert(namedCard.Status == "NOT INSTALLED", "FLiNG card status changed");
+
+const string wemodGamesJson = """{"schema_version":1,"games":[{"appid":20,"name":"Space Game","install_dir":"Space Game","library_path":"/games","trainer_installed":true,"trainer_path":"/t/Trainer.exe","running":false,"trainer_launch_delay_seconds":0,"trainer_instructions":[],"wemod_enabled":true,"trainer_choice":"both","wemod_installed":false}]}""";
+var wemodGame = JsonSerializer.Deserialize<GameListResponse>(wemodGamesJson)!.Games[0];
+Assert(wemodGame.TrainerChoice == TrainerChoices.Both, "trainer_choice did not deserialize");
+Assert(!TrainerChoices.IsReady(wemodGame), "both is not ready until WeMod is installed");
+Assert(GameCardPresentation.For(wemodGame).Status == "FLING + WEMOD SETUP NEEDED", "both-choice card status was wrong");
+var readyWemod = wemodGame with { TrainerChoice = TrainerChoices.Wemod, TrainerInstalled = false, WemodInstalled = true };
+Assert(TrainerChoices.IsReady(readyWemod), "WeMod choice with WeMod installed was not ready");
+Assert(GameCardPresentation.For(readyWemod).Status == "WEMOD READY", "WeMod card status was wrong");
+Assert(TrainerChoices.Normalize("bogus") == TrainerChoices.Fling, "unknown choices did not fall back to FLiNG");
+Assert(TrainerChoices.UsesFling(TrainerChoices.Both) && TrainerChoices.UsesWemod(TrainerChoices.Both), "both did not use both");
+Assert(TrainerChoices.Options.Count == 3, "details page must offer FLiNG, WeMod and both");
+
+const string wemodJson = """{"schema_version":1,"success":true,"operation":"wemod_install","appid":20,"name":"Space Game","trainer_choice":"wemod","wemod_installed":true,"message":"WeMod installed"}""";
+var wemodResult = JsonSerializer.Deserialize<WemodResponse>(wemodJson)!;
+Assert(wemodResult.WemodInstalled && wemodResult.TrainerChoice == "wemod" && wemodResult.AppId == 20, "WeMod response contract did not deserialize");
+
 var artworkRoot = Path.Combine(Path.GetTempPath(), $"fling-artwork-tests-{Guid.NewGuid():N}");
 try
 {
