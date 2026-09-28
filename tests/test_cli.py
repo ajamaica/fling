@@ -829,7 +829,12 @@ esac
         self.assertTrue(games[20]["wemod_enabled"]); self.assertEqual("wemod", games[20]["trainer_choice"])
         self.assertFalse(games[10]["wemod_enabled"]); self.assertEqual("fling", games[10]["trainer_choice"])
         self.assertIn("20\tSpace Game\twemod\tready", self.invoke("wemod", "status", check=True).stdout)
-        self.assertEqual([str(wemod)], launched([wemod]))
+        # The first WeMod launch shares the install and sign-in with every game.
+        shared = self.home / ".local/share/fling/wemod/app-9.1.0/WeMod.exe"
+        self.assertEqual([str(shared)], launched([wemod]))
+        wemod = shared
+        self.assertEqual(self.home / ".local/share/fling/wemod-profile",
+                         (prefix / "drive_c/users/steamuser/AppData/Roaming/WeMod").readlink())
 
         self.invoke("use", "Space Game", "both", check=True)
         self.assertIn("\tboth\t", self.invoke("wemod", "status", check=True).stdout)
@@ -838,6 +843,29 @@ esac
         self.invoke("use", "20", "fling", check=True)
         self.assertEqual([str(trainer)], launched([trainer]))
         self.assertEqual(2, self.invoke("use").returncode)
+
+    def test_second_game_reuses_wemod_install_and_sign_in_without_setup(self):
+        for appid, lib in (("10", self.steam), ("20", self.lib2)):
+            (lib / f"steamapps/compatdata/{appid}/pfx").mkdir(parents=True)
+        first = self.lib2 / "steamapps/compatdata/20/pfx/drive_c/users/steamuser/AppData"
+        (first / "Local/WeMod/app-9.1.0").mkdir(parents=True)
+        (first / "Local/WeMod/app-9.1.0/WeMod.exe").write_bytes(b"MZ")
+        (first / "Roaming/WeMod").mkdir(parents=True)
+        (first / "Roaming/WeMod/session").write_text("signed-in")
+        self.env["FLING_PROC_ROOT"] = str(self.tmp / "proc"); (self.tmp / "proc").mkdir()
+        launch_log = self.tmp / "launch.log"
+        self.command("protontricks-launch", f'printf "%s\\n" "${{@: -1}}" >> "{launch_log}"\n')
+        self.command("pgrep", "exit 1\n"); self.command("busctl", "exit 1\n")
+        self.invoke("use", "20", "wemod", check=True); self.invoke("use", "10", "wemod", check=True)
+        self.invoke("run", "20", check=True)
+        run = self.invoke("run", "10", check=True)
+        shared = self.home / ".local/share/fling/wemod/app-9.1.0/WeMod.exe"
+        for _ in range(50):
+            if launch_log.exists() and len(launch_log.read_text().splitlines()) >= 2: break
+            time.sleep(0.1)
+        self.assertEqual([str(shared)] * 2, launch_log.read_text().splitlines(), run.stdout)
+        second = self.steam / "steamapps/compatdata/10/pfx/drive_c/users/steamuser/AppData/Roaming/WeMod"
+        self.assertEqual("signed-in", (second / "session").read_text())
 
     def test_wemod_setup_installs_without_changing_the_choice(self):
         (self.lib2 / "steamapps/compatdata/20/pfx").mkdir(parents=True)

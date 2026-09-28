@@ -133,3 +133,115 @@ fn running_matches_only_this_games_wemod() {
     );
     assert!(wemod::running(&config, 42));
 }
+
+fn add_game(config: &Config, appid: u32) {
+    fs::create_dir_all(
+        config
+            .steam_root
+            .join(format!("steamapps/compatdata/{appid}/pfx")),
+    )
+    .expect("prefix");
+    fs::write(
+        config
+            .steam_root
+            .join(format!("steamapps/appmanifest_{appid}.acf")),
+        format!(r#""appid" "{appid}" "name" "Game {appid}" "installdir" "Game{appid}""#),
+    )
+    .expect("manifest");
+}
+
+fn roaming(config: &Config, appid: u32) -> std::path::PathBuf {
+    config.steam_root.join(format!(
+        "steamapps/compatdata/{appid}/pfx/drive_c/users/steamuser/AppData/Roaming/WeMod"
+    ))
+}
+
+#[test]
+fn first_games_sign_in_is_shared_with_later_games() {
+    let (_temp, config) = fixture();
+    add_game(&config, 43);
+    let shared = wemod::profile_dir(&config);
+
+    fs::create_dir_all(roaming(&config, 42).join("Local Storage")).expect("profile");
+    fs::write(
+        roaming(&config, 42).join("Local Storage/session"),
+        b"signed-in",
+    )
+    .expect("session");
+    wemod::share_profile(&config, 42).expect("share first");
+    assert_eq!(fs::read_link(roaming(&config, 42)).expect("link"), shared);
+    assert_eq!(
+        fs::read(shared.join("Local Storage/session")).expect("adopted"),
+        b"signed-in"
+    );
+    wemod::share_profile(&config, 42).expect("idempotent");
+
+    // A later game's own (signed-out) profile is kept as a backup, not used.
+    fs::create_dir_all(roaming(&config, 43)).expect("profile");
+    fs::write(roaming(&config, 43).join("stale"), b"x").expect("stale");
+    wemod::share_profile(&config, 43).expect("share second");
+    assert_eq!(fs::read_link(roaming(&config, 43)).expect("link"), shared);
+    assert!(shared.join("Local Storage/session").is_file());
+    assert!(!shared.join("stale").exists());
+    let backups: Vec<_> = fs::read_dir(roaming(&config, 43).parent().expect("parent"))
+        .expect("roaming")
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("WeMod.fling-backup-")
+        })
+        .collect();
+    assert_eq!(backups.len(), 1);
+    assert!(backups[0].path().join("stale").is_file());
+
+    // A game that never ran WeMod is simply linked.
+    add_game(&config, 44);
+    wemod::share_profile(&config, 44).expect("share fresh");
+    assert_eq!(fs::read_link(roaming(&config, 44)).expect("link"), shared);
+}
+
+#[test]
+fn one_install_serves_every_game() {
+    let (_temp, config) = fixture();
+    add_game(&config, 43);
+    let local = config
+        .steam_root
+        .join("steamapps/compatdata/42/pfx/drive_c/users/steamuser/AppData/Local/WeMod");
+    app(&local, "9.1.0");
+    fs::write(local.join("Update.exe"), b"MZ").expect("update");
+    assert_eq!(wemod::find_exe(&config, 43), None);
+
+    assert!(wemod::import_install(&config, 42).expect("import"));
+    assert!(!wemod::import_install(&config, 42).expect("nothing new"));
+    let shared_exe = wemod::shared_dir(&config).join("app-9.1.0/WeMod.exe");
+    assert!(wemod::shared_dir(&config).join("Update.exe").is_file());
+    assert_eq!(wemod::find_exe(&config, 43), Some(shared_exe.clone()));
+    assert_eq!(wemod::find_exe(&config, 42), Some(shared_exe));
+
+    // A newer install in one prefix still wins until it is imported.
+    app(&local, "9.2.0");
+    assert_eq!(
+        wemod::find_exe(&config, 42),
+        Some(local.join("app-9.2.0/WeMod.exe"))
+    );
+}
+
+#[test]
+fn running_detects_shared_install_by_wineprefix() {
+    let (_temp, config) = fixture();
+    let dir = config.proc_root.join("20");
+    fs::create_dir_all(&dir).expect("pid");
+    fs::write(
+        dir.join("cmdline"),
+        b"Z:\\home\\u\\.local\\share\\fling\\wemod\\app-9.1.0\\WeMod.exe\0",
+    )
+    .expect("cmdline");
+    fs::write(
+        dir.join("environ"),
+        b"WINEPREFIX=/home/u/Steam/steamapps/compatdata/42/pfx/\0",
+    )
+    .expect("environ");
+    assert!(wemod::running(&config, 42));
+    assert!(!wemod::running(&config, 4));
+}

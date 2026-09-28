@@ -172,6 +172,19 @@ pub fn run(config: &Config, q: &str) -> Result<(), Error> {
             g.name
         )));
     }
+    if plan.wemod.is_some() && !wemod::running(config, g.appid) {
+        // One WeMod install and sign-in serve every game.
+        if let Err(error) = wemod::import_install(config, g.appid) {
+            println!(">>> WARNING: could not share this game's WeMod install: {error}");
+        }
+        if let Err(error) = wemod::share_profile(config, g.appid) {
+            println!(">>> WARNING: could not link the shared WeMod sign-in: {error}");
+        }
+    }
+    let plan = wemod::Plan {
+        wemod: plan.wemod.and(wemod::find_exe(config, g.appid)),
+        ..plan
+    };
     let wemod_exe = plan.wemod.filter(|_| {
         let running = wemod::running(config, g.appid);
         if running {

@@ -48,17 +48,25 @@ fling use <game> wemod        # WeMod
 fling use <game> both         # FLiNG trainer and WeMod together
 ```
 
-WeMod is a Windows app with its own account, and Fling never downloads it. It must be installed in the game's Proton prefix so it shares the game's Wine server:
+WeMod is a Windows app with its own account, and Fling never downloads it. You install it and sign in **once**, in any one game, and every other game reuses that install and session:
 
 ```bash
-# Launch the game once so its Proton prefix exists, then close it.
+# Launch any game once so its Proton prefix exists, then close it.
 fling wemod setup <appid> ~/Downloads/WeMod-Setup.exe   # add --dotnet to also run: protontricks <appid> -q dotnet48
-fling wemod status                                      # games using WeMod and the WeMod.exe each will use
+# Sign in when WeMod opens, then close it. That's the only sign-in you need.
+fling use <other-game> wemod                            # no second setup or sign-in
+fling wemod status                                      # shared install and sign-in paths, and games using WeMod
 ```
 
-`setup` runs the installer in the game's prefix with `protontricks-launch`. Sign in when WeMod opens, then close it. `setup` does not change the game's choice; pick it with `fling use`. At boot, the watcher starts whatever the game is set to inside its container as soon as the game process is ready. Game profiles such as Elden Ring's delay still apply. With `both`, a crashed trainer is retried without starting a second WeMod, and a missing FLiNG trainer or WeMod only produces a warning while the other still starts. Two trainers writing the same values can fight each other, so avoid turning on the same cheat in both.
+How the sharing works:
 
-Fling uses the newest `drive_c/users/steamuser/AppData/Local/WeMod/app-*/WeMod.exe` in the game's prefix. If that is missing, it falls back to an unpacked `app-*` folder copied to `~/.local/share/fling/wemod/`. Choices are stored in `~/.config/fling/wemod-appids`, and `fling games --json` reports `trainer_choice` (`"fling"`, `"wemod"` or `"both"`) and `wemod_enabled`. If WeMod refuses to start, the prefix usually needs .NET Framework 4.8 (`--dotnet`). The single-player-only warning above applies to WeMod too.
+- **Install:** `setup` runs the installer in that game's prefix with `protontricks-launch`, then copies the install to `~/.local/share/fling/wemod/`. Every game runs WeMod from there, so WeMod also updates once for all games.
+- **Sign-in:** each game's `%APPDATA%\WeMod` (`drive_c/users/steamuser/AppData/Roaming/WeMod` in its prefix) becomes a link to `~/.local/share/fling/wemod-profile/`, where the session lives. The first game's existing WeMod profile is adopted as the shared one. A profile that another game already had is kept next to the link as `WeMod.fling-backup-<time>` and never deleted.
+- Fling does this automatically before each WeMod launch. A WeMod already installed in a game's prefix is picked up and shared the first time that game starts WeMod.
+
+`setup` does not change the game's choice; pick it with `fling use`. At boot, the watcher starts whatever the game is set to inside its container as soon as the game process is ready. Game profiles such as Elden Ring's delay still apply. With `both`, a crashed trainer is retried without starting a second WeMod, and a missing FLiNG trainer or WeMod only produces a warning while the other still starts. Two trainers writing the same values can fight each other, so avoid turning on the same cheat in both. Because the sign-in is one shared profile, run WeMod for one game at a time.
+
+`fling games --json` reports `trainer_choice` (`"fling"`, `"wemod"` or `"both"`) and `wemod_enabled`; choices are stored in `~/.config/fling/wemod-appids`. If WeMod refuses to start for a game, its prefix usually needs .NET Framework 4.8: run `protontricks <appid> -q dotnet48` for that game. The single-player-only warning above applies to WeMod too.
 
 ## Install Fling UI + CLI
 
