@@ -1,7 +1,8 @@
-//! Optional WeMod support. WeMod is a user-installed Windows app that must run
-//! inside the game's own Proton prefix and container to see the game process.
-//! Fling never downloads WeMod; it only launches an existing install at boot.
+//! Optional WeMod support. WeMod is a Windows app that must run inside the
+//! game's own Proton prefix and container to see the game process. One install
+//! and one signed-in profile are shared by every game.
 use crate::{config::Config, error::Error, install, steam};
+use sha2::Digest;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -9,6 +10,11 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+
+/// WeMod's official installer download (the site's "Download" button).
+/// Override with FLING_WEMOD_URL if it moves.
+const DOWNLOAD_URL: &str = "https://api.wemod.com/client/download";
+const DOWNLOAD_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/128.0";
 
 const PREFIX_APP_DIR: &str = "drive_c/users/steamuser/AppData/Local/WeMod";
 const PREFIX_ROAMING_DIR: &str = "drive_c/users/steamuser/AppData/Roaming";
@@ -266,6 +272,23 @@ pub fn import_install(config: &Config, appid: u32) -> Result<bool, Error> {
     Ok(imported)
 }
 
+/// Returns WeMod for this game, first sharing an install found in any game's
+/// prefix, so WeMod is never downloaded or installed twice.
+pub fn find_or_import(config: &Config, appid: u32) -> Option<PathBuf> {
+    if let Some(exe) = find_exe(config, appid) {
+        return Some(exe);
+    }
+    for game in steam::games(config) {
+        if let Err(error) = import_install(config, game.appid) {
+            println!(
+                ">>> WARNING: could not share {}'s WeMod install: {error}",
+                game.name
+            );
+        }
+    }
+    find_exe(config, appid)
+}
+
 fn backup_path(path: &Path) -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -367,7 +390,7 @@ pub fn running(config: &Config, appid: u32) -> bool {
 fn describe(config: &Config, appid: u32) -> String {
     match find_exe(config, appid) {
         Some(exe) => format!("ready ({})", exe.display()),
-        None => "WeMod not found — run: fling wemod setup <appid> <WeMod-Setup.exe>".into(),
+        None => format!("WeMod not installed — run: fling wemod install {appid}"),
     }
 }
 
@@ -390,9 +413,18 @@ pub fn choose(config: &Config, query: &str, value: Option<&str>) -> Result<(), E
             game.appid
         );
     }
-    if choice.uses_wemod() && find_exe(config, game.appid).is_none() {
+    if choice.uses_wemod() && find_or_import(config, game.appid).is_none() {
+        if value.is_some() && !prefixes(config, game.appid).is_empty() {
+            println!(">>> WeMod is not installed yet — installing it automatically...");
+            return install(config, &game.appid.to_string(), false).map_err(|error| {
+                Error::Message(format!(
+                    "{error} — the choice was saved; retry with: fling wemod install {}",
+                    game.appid
+                ))
+            });
+        }
         println!(
-            ">>> WeMod not installed — run: fling wemod setup {} <WeMod-Setup.exe>",
+            ">>> WeMod not installed — launch the game once, then run: fling wemod install {}",
             game.appid
         );
     }
@@ -486,5 +518,85 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
         game.appid,
         choice(config, game.appid).as_str()
     );
+    Ok(())
+}
+
+/// Downloads the official WeMod installer and runs it through `setup`.
+pub fn install(config: &Config, query: &str, dotnet: bool) -> Result<(), Error> {
+    let game = install::resolve(config, query)?;
+    if prefixes(config, game.appid).is_empty() {
+        return Err(Error::Message(format!(
+            "no Proton prefix for {} — launch the game once first",
+            game.name
+        )));
+    }
+    let cache = config.home.join(".cache/fling");
+    fs::create_dir_all(&cache)?;
+    let stage = tempfile::Builder::new()
+        .prefix(".wemod-download-")
+        .tempdir_in(&cache)?;
+    let installer = stage.path().join("WeMod-Setup.exe");
+    let url = std::env::var("FLING_WEMOD_URL").unwrap_or_else(|_| DOWNLOAD_URL.into());
+    println!(">>> Downloading the WeMod installer from {url}...");
+    let status = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--location",
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--connect-timeout",
+            "15",
+            "--max-time",
+            "600",
+            "--max-filesize",
+            "536870912",
+            "-A",
+            DOWNLOAD_UA,
+            "-o",
+        ])
+        .arg(&installer)
+        .arg(&url)
+        .status()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Error::DependencyMissing("curl".into()),
+            _ => Error::Io(error),
+        })?;
+    if !status.success() {
+        return Err(Error::Network("WeMod download failed".into()));
+    }
+    let detected = Command::new("file")
+        .arg("-b")
+        .arg(&installer)
+        .output()
+        .map_err(|_| Error::DependencyMissing("file".into()))?;
+    if !String::from_utf8_lossy(&detected.stdout).contains("PE32") {
+        return Err(Error::InvalidPayload(
+            "the WeMod download is not a Windows installer".into(),
+        ));
+    }
+    let bytes = fs::read(&installer)?;
+    setup(config, &game.appid.to_string(), &installer, dotnet)?;
+    // Diagnostic change tracking only, like trainer-metadata.json.
+    let metadata = serde_json::json!({
+        "schema_version": 1,
+        "download_url": url,
+        "sha256": format!("{:x}", sha2::Sha256::digest(&bytes)),
+        "installed_at": format!(
+            "{}Z",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        ),
+    });
+    fs::create_dir_all(shared_dir(config))?;
+    fs::write(
+        shared_dir(config).join("fling-install.json"),
+        serde_json::to_vec_pretty(&metadata)?,
+    )?;
     Ok(())
 }

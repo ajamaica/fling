@@ -877,14 +877,69 @@ esac
         self.assertIn("fling use 20 fling|wemod|both (now: fling)", setup.stdout)
         self.assertIn("\tfling", self.invoke("use", "20", check=True).stdout)
 
-    def test_wemod_enabled_without_install_reports_setup_command(self):
+    def test_wemod_chosen_without_install_reports_install_command(self):
         (self.steam / "steamapps/compatdata/10/pfx").mkdir(parents=True)
         self.env["FLING_PROC_ROOT"] = str(self.tmp)
-        self.invoke("use", "10", "wemod", check=True)
+        self.command("curl", "exit 22\n")
+        use = self.invoke("use", "10", "wemod")
+        self.assertNotEqual(0, use.returncode)
+        self.assertIn("choice was saved; retry with: fling wemod install 10", use.stderr)
+        self.assertIn("10\tQuote \" Quest\twemod", self.invoke("use", "10", check=True).stdout)
         run = self.invoke("run", "10")
         self.assertNotEqual(0, run.returncode)
-        self.assertIn("fling wemod setup 10", run.stderr)
+        self.assertIn("fling wemod install 10", run.stderr)
         self.assertEqual(2, self.invoke("wemod", "bogus").returncode)
+
+    def mock_wemod_installer(self, prefix, detected="PE32 executable (GUI) Intel 80386, for MS Windows"):
+        """Fake download plus an installer that lays out WeMod like Squirrel does."""
+        curl_log = self.tmp / "curl.log"
+        self.command("curl", f'''printf '%s\\n' "$*" >> "{curl_log}"
+out=""; prev=""
+for arg in "$@"; do [ "$prev" = -o ] && out="$arg"; prev="$arg"; done
+printf 'MZ-wemod-setup' > "$out"
+''')
+        self.command("file", f"printf '%s\\n' '{detected}'\n")
+        app = prefix / "drive_c/users/steamuser/AppData/Local/WeMod/app-9.3.0"
+        self.command("protontricks-launch", f'''mkdir -p "{app}"
+cp "${{@: -1}}" "{app}/WeMod.exe"
+printf 'MZ' > "{app.parent}/Update.exe"
+''')
+        return curl_log
+
+    def test_wemod_install_downloads_and_shares_the_install(self):
+        prefix = self.lib2 / "steamapps/compatdata/20/pfx"; prefix.mkdir(parents=True)
+        curl_log = self.mock_wemod_installer(prefix)
+        out = self.invoke("wemod", "install", "20", check=True).stdout
+        self.assertIn("https://api.wemod.com/client/download", curl_log.read_text())
+        shared = self.home / ".local/share/fling/wemod"
+        self.assertEqual(b"MZ-wemod-setup", (shared / "app-9.3.0/WeMod.exe").read_bytes())
+        self.assertTrue((shared / "Update.exe").is_file())
+        meta = json.loads((shared / "fling-install.json").read_text())
+        self.assertEqual("https://api.wemod.com/client/download", meta["download_url"])
+        self.assertEqual(hashlib.sha256(b"MZ-wemod-setup").hexdigest(), meta["sha256"])
+        self.assertIn("fling use 20 fling|wemod|both (now: fling)", out)
+        self.assertEqual(self.home / ".local/share/fling/wemod-profile",
+                         (prefix / "drive_c/users/steamuser/AppData/Roaming/WeMod").readlink())
+        self.assertEqual([], list((self.home / ".cache/fling").iterdir()))
+
+    def test_choosing_wemod_installs_it_automatically_once(self):
+        prefix = self.lib2 / "steamapps/compatdata/20/pfx"; prefix.mkdir(parents=True)
+        curl_log = self.mock_wemod_installer(prefix)
+        self.invoke("use", "20", "wemod", check=True)
+        self.assertTrue((self.home / ".local/share/fling/wemod/app-9.3.0/WeMod.exe").is_file())
+        self.assertEqual(1, len(curl_log.read_text().splitlines()))
+        # Another game reuses the shared install instead of downloading again.
+        (self.steam / "steamapps/compatdata/10/pfx").mkdir(parents=True)
+        self.invoke("use", "10", "both", check=True)
+        self.assertEqual(1, len(curl_log.read_text().splitlines()))
+
+    def test_wemod_install_rejects_non_windows_download(self):
+        prefix = self.lib2 / "steamapps/compatdata/20/pfx"; prefix.mkdir(parents=True)
+        self.mock_wemod_installer(prefix, detected="HTML document, ASCII text")
+        p = self.invoke("wemod", "install", "20")
+        self.assertNotEqual(0, p.returncode)
+        self.assertIn("not a Windows installer", p.stderr)
+        self.assertFalse((self.home / ".local/share/fling/wemod").exists())
 
     def test_install_zip_normalizes_exe(self):
         archive = self.tmp / "trainer.zip"

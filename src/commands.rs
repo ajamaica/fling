@@ -149,10 +149,13 @@ pub fn setup(config: &Config, q: Option<&str>) -> Result<(), Error> {
 pub fn run(config: &Config, q: &str) -> Result<(), Error> {
     let g = install::resolve(config, q)?;
     let choice = wemod::choice(config, g.appid);
+    if choice.uses_wemod() {
+        wemod::find_or_import(config, g.appid);
+    }
     let plan = wemod::plan(config, g.appid);
     if choice.uses_wemod() && plan.wemod.is_none() {
         let message = format!(
-            "WeMod is enabled for '{}' but not installed — run: fling wemod setup {} <WeMod-Setup.exe>",
+            "WeMod is chosen for '{}' but not installed — run: fling wemod install {}",
             g.name, g.appid
         );
         if plan.trainer.is_none() {

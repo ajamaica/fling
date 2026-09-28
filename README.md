@@ -48,19 +48,24 @@ fling use <game> wemod        # WeMod
 fling use <game> both         # FLiNG trainer and WeMod together
 ```
 
-WeMod is a Windows app with its own account, and Fling never downloads it. You install it and sign in **once**, in any one game, and every other game reuses that install and session:
+WeMod is a Windows app with its own account. Fling installs it for you, **once**, and every game shares that install and your sign-in:
 
 ```bash
 # Launch any game once so its Proton prefix exists, then close it.
-fling wemod setup <appid> ~/Downloads/WeMod-Setup.exe   # add --dotnet to also run: protontricks <appid> -q dotnet48
+fling use <game> wemod           # installs WeMod automatically the first time, then selects it
 # Sign in when WeMod opens, then close it. That's the only sign-in you need.
-fling use <other-game> wemod                            # no second setup or sign-in
-fling wemod status                                      # shared install and sign-in paths, and games using WeMod
+fling use <other-game> wemod     # reuses the same install and sign-in, no download
+
+fling wemod install <appid>      # (re)install or update WeMod on demand; add --dotnet for .NET 4.8
+fling wemod setup <appid> ~/Downloads/WeMod-Setup.exe   # use an installer you downloaded yourself
+fling wemod status               # shared install and sign-in paths, and games using WeMod
 ```
+
+The automatic install downloads WeMod's official installer from `https://api.wemod.com/client/download` (set `FLING_WEMOD_URL` to override it). It checks that the download is a Windows executable and runs it in that game's prefix. The SHA-256 and time are recorded in `~/.local/share/fling/wemod/fling-install.json` for change tracking. WeMod publishes no checksum, so, as with trainers, this is not proof the file is safe. If WeMod is already installed in any game's prefix, Fling shares that install instead of downloading again.
 
 How the sharing works:
 
-- **Install:** `setup` runs the installer in that game's prefix with `protontricks-launch`, then copies the install to `~/.local/share/fling/wemod/`. Every game runs WeMod from there, so WeMod also updates once for all games.
+- **Install:** `install`/`setup` run the installer in that game's prefix with `protontricks-launch`, then copy the install to `~/.local/share/fling/wemod/`. Every game runs WeMod from there, so WeMod also updates once for all games.
 - **Sign-in:** each game's `%APPDATA%\WeMod` (`drive_c/users/steamuser/AppData/Roaming/WeMod` in its prefix) becomes a link to `~/.local/share/fling/wemod-profile/`, where the session lives. The first game's existing WeMod profile is adopted as the shared one. A profile that another game already had is kept next to the link as `WeMod.fling-backup-<time>` and never deleted.
 - Fling does this automatically before each WeMod launch. A WeMod already installed in a game's prefix is picked up and shared the first time that game starts WeMod.
 
