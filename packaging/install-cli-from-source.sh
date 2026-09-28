@@ -43,11 +43,19 @@ missing=()
 for c in curl jq python3 file busctl systemctl; do command -v "$c" >/dev/null || missing+=("$c"); done
 [ ${#missing[@]} -eq 0 ] || die "missing required tools: ${missing[*]} (install them and re-run)"
 PT_FLATPAK=0
-if command -v protontricks-launch >/dev/null; then
-    say "protontricks: native"
-elif command -v flatpak >/dev/null && flatpak info "$PT_ID" >/dev/null 2>&1; then
-    say "protontricks: Flatpak"
+if command -v flatpak >/dev/null && flatpak info "$PT_ID" >/dev/null 2>&1; then
+    # Some distros ship /usr/bin/protontricks-launch as a thin wrapper around
+    # `flatpak run`, so a launcher on PATH does not mean protontricks is native.
+    # Whenever the Flatpak is present it needs the overrides below; adding them
+    # is harmless when a genuinely native protontricks ends up being used.
     PT_FLATPAK=1
+    if command -v protontricks-launch >/dev/null; then
+        say "protontricks: Flatpak (launcher on PATH)"
+    else
+        say "protontricks: Flatpak"
+    fi
+elif command -v protontricks-launch >/dev/null; then
+    say "protontricks: native"
 else
     die "protontricks is required (install the distro package or user Flatpak $PT_ID)"
 fi
@@ -68,6 +76,10 @@ if [ "$PT_FLATPAK" = 1 ]; then
     STEAM_ROOT="$("$BIN_DIR/fling" _steamroot 2>/dev/null || echo "$HOME/.local/share/Steam")"
     flatpak override --user --filesystem="$STEAM_ROOT" "$PT_ID" || true
     flatpak override --user --filesystem="$HOME/Trainers:ro" "$PT_ID" || true
+    # protontricks-launch is handed paths below these two directories: the staged
+    # WeMod installer in the cache, and the shared WeMod install it launches from.
+    flatpak override --user --filesystem="$HOME/.cache/fling" "$PT_ID" || true
+    flatpak override --user --filesystem="$HOME/.local/share/fling" "$PT_ID" || true
     flatpak override --user --talk-name='com.steampowered.*' "$PT_ID" || true
 fi
 guard_targets
