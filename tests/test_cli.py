@@ -797,6 +797,43 @@ esac
         setup = self.invoke("setup", "30")
         self.assertNotIn("no trainer downloaded", setup.stdout)
 
+    def test_wemod_enabled_game_launches_wemod_instead_of_trainer(self):
+        trainer = self.home / "Trainers/20 - Space Game/Trainer.exe"
+        trainer.parent.mkdir(parents=True); trainer.write_bytes(b"MZ")
+        prefix = self.lib2 / "steamapps/compatdata/20/pfx"
+        wemod = prefix / "drive_c/users/steamuser/AppData/Local/WeMod/app-9.1.0/WeMod.exe"
+        wemod.parent.mkdir(parents=True); wemod.write_bytes(b"MZ")
+        self.env["FLING_PROC_ROOT"] = str(self.tmp / "proc")
+        (self.tmp / "proc").mkdir()
+        launch_log = self.tmp / "launch.log"
+        self.command("protontricks-launch", f'printf "%s\\n" "$@" > "{launch_log}"\n')
+        self.command("pgrep", "exit 1\n")
+        self.command("busctl", "exit 1\n")
+
+        self.assertNotIn("usage", self.invoke("wemod", "enable", "20", check=True).stderr)
+        games = {g["appid"]: g for g in self.payload(self.invoke("games", "--json", check=True))["games"]}
+        self.assertTrue(games[20]["wemod_enabled"])
+        self.assertFalse(games[10]["wemod_enabled"])
+        self.assertIn("20\tSpace Game\tready", self.invoke("wemod", "status", check=True).stdout)
+
+        run = self.invoke("run", "20")
+        self.assertEqual(0, run.returncode, run.stderr)
+        self.assertIn("Launching WeMod", run.stdout)
+        self.assertEqual(str(wemod), launch_log.read_text().splitlines()[-1])
+
+        self.invoke("wemod", "disable", "20", check=True)
+        self.invoke("run", "20", check=True)
+        self.assertEqual(str(trainer), launch_log.read_text().splitlines()[-1])
+
+    def test_wemod_enabled_without_install_reports_setup_command(self):
+        (self.steam / "steamapps/compatdata/10/pfx").mkdir(parents=True)
+        self.env["FLING_PROC_ROOT"] = str(self.tmp)
+        self.invoke("wemod", "enable", "10", check=True)
+        run = self.invoke("run", "10")
+        self.assertNotEqual(0, run.returncode)
+        self.assertIn("fling wemod setup 10", run.stderr)
+        self.assertEqual(2, self.invoke("wemod", "bogus").returncode)
+
     def test_install_zip_normalizes_exe(self):
         archive = self.tmp / "trainer.zip"
         with zipfile.ZipFile(archive, "w") as zf:

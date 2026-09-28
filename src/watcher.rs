@@ -1,4 +1,4 @@
-use crate::{config::Config, error::Error, game_profiles, process};
+use crate::{config::Config, error::Error, game_profiles, process, wemod};
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
@@ -408,8 +408,8 @@ pub fn watch(config: &Config) -> Result<(), Error> {
                 .unwrap_or_default();
             match state.observe_at(
                 &service.key,
-                crate::steam::find_trainer(config, id).is_some(),
-                trainer_running(id),
+                crate::steam::find_trainer(config, id).is_some() || wemod::launchable(config, id),
+                trainer_running(id) || wemod::running(config, id),
                 readiness,
                 observed_at,
                 launch_delay,

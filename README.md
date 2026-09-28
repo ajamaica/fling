@@ -37,6 +37,22 @@ Downloads use redirect handling, HTTP failure checks, connection and total timeo
 
 PRAGMATA (Steam app 3357650) requires REFramework for the FLiNG trainer's anti-cheat bypass. Fling installs only `dinput8.dll` from a pinned official nightly release into the verified game root, verifies the release asset's published SHA-256, and records `.fling-reframework.json` there. It will not overwrite an unmanaged or externally changed `dinput8.dll`; resolve that mod-loader conflict manually and retry. Removing the trainer also removes these runtime files only when their metadata and checksum still prove that Fling manages them.
 
+## WeMod (optional)
+
+Fling can start [WeMod](https://www.wemod.com/) alongside a game at boot instead of the FLiNG trainer. WeMod is a Windows app with its own account; Fling never downloads it. It must live in the game's Proton prefix so it shares the game's Wine server:
+
+```bash
+# Launch the game once so its Proton prefix exists, then close it.
+fling wemod setup <appid> ~/Downloads/WeMod-Setup.exe            # add --dotnet to also run: protontricks <appid> -q dotnet48
+fling wemod enable <appid>      # (setup already does this)
+fling wemod disable <appid>     # go back to the FLiNG trainer
+fling wemod status              # enabled games and the WeMod.exe each will use
+```
+
+`setup` runs the installer in the game's prefix with `protontricks-launch`. Sign in when WeMod opens, then close it. After that, the watcher launches WeMod inside the game's container as soon as the game process is ready, exactly as it launches `Trainer.exe`. Game profiles such as Elden Ring's delay still apply. For WeMod-enabled games the FLiNG trainer is skipped, so two trainers never touch the same process.
+
+Fling uses the newest `drive_c/users/steamuser/AppData/Local/WeMod/app-*/WeMod.exe` in the game's prefix. If that is missing, it falls back to an unpacked `app-*` folder copied to `~/.local/share/fling/wemod/`. Enabled app IDs are stored in `~/.config/fling/wemod-appids`, and `fling games --json` reports them as `wemod_enabled`. If WeMod refuses to start, the prefix usually needs .NET Framework 4.8 (`--dotnet`). The single-player-only warning above applies to WeMod too.
+
 ## Install Fling UI + CLI
 
 On an x86_64 Linux or Bazzite system, run:

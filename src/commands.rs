@@ -1,4 +1,4 @@
-use crate::{config::Config, error::Error, install, process::command_ok, steam};
+use crate::{config::Config, error::Error, install, process::command_ok, steam, wemod};
 use std::{env, fs, process::Command, thread, time::Duration};
 
 fn steam_launch_appid(command: &[u8]) -> Option<String> {
@@ -28,7 +28,7 @@ fn launch_ancestor_appid(config: &Config) -> Option<String> {
     None
 }
 
-fn start_window_tagger(config: &Config) {
+fn start_window_tagger(config: &Config, title: &'static str) {
     let Some(appid) = launch_ancestor_appid(config) else {
         return;
     };
@@ -42,7 +42,7 @@ fn start_window_tagger(config: &Config) {
                 };
                 let display = format!(":{display}");
                 let output = Command::new("timeout")
-                    .args(["3", "xdotool", "search", "--name", "-i", "trainer"])
+                    .args(["3", "xdotool", "search", "--name", "-i", title])
                     .env("DISPLAY", &display)
                     .output();
                 let Some(window) = output
@@ -148,24 +148,35 @@ pub fn setup(config: &Config, q: Option<&str>) -> Result<(), Error> {
 }
 pub fn run(config: &Config, q: &str) -> Result<(), Error> {
     let g = install::resolve(config, q)?;
-    let exe = steam::find_trainer(config, g.appid).ok_or_else(|| {
-        Error::Message(format!(
-            "no trainer installed for '{}' — run: fling get {}",
-            g.name, g.appid
-        ))
-    })?;
-    if !config
-        .steam_root
-        .join(format!("steamapps/compatdata/{}/pfx", g.appid))
-        .is_dir()
-    {
+    let use_wemod = wemod::enabled(config, g.appid);
+    let exe = if use_wemod {
+        if wemod::running(config, g.appid) {
+            println!(">>> WeMod is already running for {}", g.name);
+            return Ok(());
+        }
+        wemod::find_exe(config, g.appid).ok_or_else(|| {
+            Error::Message(format!(
+                "WeMod is enabled for '{}' but not installed — run: fling wemod setup {} <WeMod-Setup.exe>",
+                g.name, g.appid
+            ))
+        })?
+    } else {
+        steam::find_trainer(config, g.appid).ok_or_else(|| {
+            Error::Message(format!(
+                "no trainer installed for '{}' — run: fling get {}",
+                g.name, g.appid
+            ))
+        })?
+    };
+    let tool = if use_wemod { "WeMod" } else { "trainer" };
+    if wemod::prefixes(config, g.appid).is_empty() {
         return Err(Error::Message(format!(
             "no Proton prefix for {} — launch the game once first",
             g.name
         )));
     }
     println!(
-        ">>> Launching trainer for {} (appid {}) in its Proton prefix...",
+        ">>> Launching {tool} for {} (appid {}) in its Proton prefix...",
         g.name, g.appid
     );
     let session = if env::var_os("DISPLAY").is_none() && env::var_os("WAYLAND_DISPLAY").is_none() {
@@ -173,7 +184,7 @@ pub fn run(config: &Config, q: &str) -> Result<(), Error> {
     } else {
         Default::default()
     };
-    start_window_tagger(config);
+    start_window_tagger(config, if use_wemod { "wemod" } else { "trainer" });
     let launch_client = fs::read_dir(config.steam_root.join("steamapps/common"))
         .ok()
         .into_iter()
@@ -213,17 +224,24 @@ pub fn run(config: &Config, q: &str) -> Result<(), Error> {
     } else {
         println!(">>> WARNING: game launcher service not found (is the game running,");
         println!(">>> with launch options STEAM_COMPAT_LAUNCHER_SERVICE=proton %command% ?)");
-        println!(">>> Falling back to a separate container — trainer will NOT see the game.");
+        println!(">>> Falling back to a separate container — {tool} will NOT see the game.");
         Command::new("protontricks-launch")
             .args(["--appid", &g.appid.to_string()])
             .arg(exe)
             .envs(&session)
             .status()?
     };
+    if use_wemod {
+        // WeMod may restart itself (updates, sign-in); stay alive while any
+        // WeMod process for this game remains so the watcher does not relaunch it.
+        while wemod::running(config, g.appid) {
+            thread::sleep(Duration::from_secs(5));
+        }
+    }
     if status.success() {
         Ok(())
     } else {
-        Err(Error::Message("trainer launch failed".into()))
+        Err(Error::Message(format!("{tool} launch failed")))
     }
 }
 pub fn restart() -> Result<(), Error> {

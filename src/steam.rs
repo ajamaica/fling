@@ -1,4 +1,4 @@
-use crate::{config::Config, error::Error, fs_safe::Dir, game_profiles};
+use crate::{config::Config, error::Error, fs_safe::Dir, game_profiles, wemod};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -17,6 +17,7 @@ pub struct Game {
     pub running: bool,
     pub trainer_launch_delay_seconds: u64,
     pub trainer_instructions: Vec<String>,
+    pub wemod_enabled: bool,
 }
 
 pub fn vdf_values(text: &str) -> Vec<(String, String)> {
@@ -76,6 +77,7 @@ pub fn libraries(config: &Config) -> Vec<PathBuf> {
 
 pub fn games(config: &Config) -> Vec<Game> {
     let mut result = BTreeMap::new();
+    let wemod_appids = wemod::enabled_appids(config);
     for lib in libraries(config) {
         let Ok(entries) = fs::read_dir(lib.join("steamapps")) else {
             continue;
@@ -126,6 +128,7 @@ pub fn games(config: &Config) -> Vec<Game> {
                         .flat_map(|profile| profile.trainer_instructions.iter())
                         .map(|instruction| (*instruction).to_owned())
                         .collect(),
+                    wemod_enabled: wemod_appids.contains(&appid),
                 },
             );
         }
