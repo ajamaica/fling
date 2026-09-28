@@ -970,6 +970,37 @@ printf 'MZ' > "{app.parent}/Update.exe"
         self.assertEqual(5, p.returncode)
         self.assertEqual("network_error", self.payload(p)["error_code"])
 
+    def test_dotnet_is_checked_and_installed_only_when_missing(self):
+        prefix = self.lib2 / "steamapps/compatdata/20/pfx"; prefix.mkdir(parents=True)
+        calls = self.tmp / "protontricks.log"
+        self.command("protontricks", f'''printf '%s\\n' "$*" >> "{calls}"
+echo protontricks-noise
+printf 'dotnet48\\n' >> "{prefix}/winetricks.log"
+''')
+        check = self.invoke("wemod", "dotnet", "20", "--check", "--json", check=True)
+        self.assertFalse(self.payload(check)["dotnet_installed"]); self.assertFalse(calls.exists())
+        self.assertNotEqual(0, self.invoke("wemod", "dotnet", "20", "--check").returncode)
+
+        p = self.invoke("wemod", "dotnet", "20", "--json", check=True)
+        result = self.payload(p)
+        self.assertTrue(result["dotnet_installed"]); self.assertTrue(result["installed_now"])
+        self.assertEqual(["20 -q dotnet48"], calls.read_text().splitlines())
+        self.assertIn("protontricks-noise", p.stderr)
+
+        again = self.payload(self.invoke("wemod", "dotnet", "20", "--json", check=True))
+        self.assertFalse(again["installed_now"]); self.assertIn("already installed", again["message"])
+        self.assertEqual(1, len(calls.read_text().splitlines()))
+        self.invoke("wemod", "dotnet", "Space Game", "--check", check=True)
+
+    def test_dotnet_json_reports_failed_install(self):
+        (self.lib2 / "steamapps/compatdata/20/pfx").mkdir(parents=True)
+        self.command("protontricks", "exit 0\n")  # "succeeds" without installing
+        p = self.invoke("wemod", "dotnet", "20", "--json")
+        self.assertEqual(1, p.returncode)
+        self.assertEqual("dotnet_failed", self.payload(p)["error_code"])
+        missing = self.invoke("wemod", "dotnet", "10", "--json")
+        self.assertEqual("no_prefix", self.payload(missing)["error_code"])
+
     def test_wemod_install_rejects_non_windows_download(self):
         prefix = self.lib2 / "steamapps/compatdata/20/pfx"; prefix.mkdir(parents=True)
         self.mock_wemod_installer(prefix, detected="HTML document, ASCII text")

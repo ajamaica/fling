@@ -514,15 +514,7 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
     }
     let appid = game.appid.to_string();
     if dotnet {
-        say!(">>> Installing .NET Framework 4.8 into the game's prefix (this can take a while)...");
-        let status = Command::new("protontricks")
-            .args([appid.as_str(), "-q", "dotnet48"])
-            .stdout(child_stdout())
-            .status()
-            .map_err(|_| Error::DependencyMissing("protontricks".into()))?;
-        if !status.success() {
-            return Err(Error::Message("protontricks dotnet48 failed".into()));
-        }
+        ensure_dotnet(config, game.appid)?;
     }
     // Link the shared profile first so the sign-in below is shared by all games.
     share_profile(config, game.appid)?;
@@ -639,6 +631,162 @@ pub fn install(config: &Config, query: &str, dotnet: bool) -> Result<(), Error> 
         serde_json::to_vec_pretty(&metadata)?,
     )?;
     Ok(())
+}
+
+/// .NET Framework 4.8's minimum `Release` value in the registry.
+const DOTNET48_RELEASE: u32 = 528_040;
+
+/// Reads `Release` from the `NDP\v4\Full` key of a Wine `system.reg`.
+pub fn dotnet_release(system_reg: &str) -> Option<u32> {
+    let header = r"[software\\microsoft\\net framework setup\\ndp\\v4\\full]";
+    let mut in_key = false;
+    for line in system_reg.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_key = line.to_lowercase().starts_with(header);
+            continue;
+        }
+        if in_key && let Some(value) = line.strip_prefix("\"Release\"=dword:") {
+            return u32::from_str_radix(value.trim(), 16).ok();
+        }
+    }
+    None
+}
+
+/// True when .NET Framework 4.8 or newer is installed in a Proton prefix,
+/// by winetricks' own log or by the registry.
+pub fn dotnet_installed(prefix: &Path) -> bool {
+    let logged = fs::read_to_string(prefix.join("winetricks.log"))
+        .is_ok_and(|log| log.lines().any(|line| line.trim() == "dotnet48"));
+    logged
+        || fs::read(prefix.join("system.reg")).is_ok_and(|data| {
+            dotnet_release(&String::from_utf8_lossy(&data)).is_some_and(|r| r >= DOTNET48_RELEASE)
+        })
+}
+
+fn game_prefix(config: &Config, game: &steam::Game) -> Result<PathBuf, Error> {
+    prefixes(config, game.appid)
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            Error::Message(format!(
+                "no Proton prefix for {} — launch the game once first",
+                game.name
+            ))
+        })
+}
+
+/// Installs .NET Framework 4.8 into the game's prefix when it is missing.
+/// Returns whether it was installed now. WeMod is shared, but .NET is per prefix.
+pub fn ensure_dotnet(config: &Config, appid: u32) -> Result<bool, Error> {
+    let game = steam::game(config, appid)
+        .ok_or_else(|| Error::Message("Installed Steam game not found".into()))?;
+    let prefix = game_prefix(config, &game)?;
+    if dotnet_installed(&prefix) {
+        say!(
+            ">>> .NET Framework 4.8 is already installed for {} ✓",
+            game.name
+        );
+        return Ok(false);
+    }
+    say!(
+        ">>> Installing .NET Framework 4.8 for {} with protontricks (this can take 10–30 minutes)...",
+        game.name
+    );
+    let status = Command::new("protontricks")
+        .args([appid.to_string().as_str(), "-q", "dotnet48"])
+        .stdout(child_stdout())
+        .status()
+        .map_err(|_| Error::DependencyMissing("protontricks".into()))?;
+    if !status.success() {
+        return Err(Error::Message(
+            "protontricks could not install .NET Framework 4.8".into(),
+        ));
+    }
+    if !dotnet_installed(&prefix) {
+        return Err(Error::Message(
+            "protontricks finished but .NET Framework 4.8 was not found in the prefix".into(),
+        ));
+    }
+    say!(">>> .NET Framework 4.8 installed for {} ✓", game.name);
+    Ok(true)
+}
+
+/// `fling wemod dotnet <game> [--check]`.
+pub fn dotnet(config: &Config, query: &str, check_only: bool) -> Result<(), Error> {
+    let game = install::resolve(config, query)?;
+    if check_only {
+        let installed = dotnet_installed(&game_prefix(config, &game)?);
+        say!(
+            "{}\t{}\t.NET 4.8 {}",
+            game.appid,
+            game.name,
+            if installed { "installed" } else { "missing" }
+        );
+        if !installed {
+            return Err(Error::Message(format!(
+                ".NET Framework 4.8 is missing — run: fling wemod dotnet {}",
+                game.appid
+            )));
+        }
+        return Ok(());
+    }
+    ensure_dotnet(config, game.appid).map(|_| ())
+}
+
+#[derive(Serialize)]
+struct DotnetJson {
+    schema_version: u8,
+    success: bool,
+    operation: &'static str,
+    appid: u32,
+    name: String,
+    dotnet_installed: bool,
+    installed_now: bool,
+    message: String,
+}
+
+/// `fling wemod dotnet <appid> [--check] --json`: checks, and unless
+/// `--check` is given installs .NET Framework 4.8 when it is missing.
+pub fn dotnet_json(config: &Config, arg: &str, check_only: bool) {
+    let game = json_game(config, "dotnet", arg);
+    let appid = game.appid;
+    let prefix = game_prefix(config, &game)
+        .unwrap_or_else(|error| json_failure("dotnet", appid, 1, "no_prefix", error.to_string()));
+    let (installed, installed_now) = if check_only {
+        (dotnet_installed(&prefix), false)
+    } else {
+        match ensure_dotnet(config, appid) {
+            Ok(now) => (true, now),
+            Err(Error::DependencyMissing(name)) => json_failure(
+                "dotnet",
+                appid,
+                8,
+                "dependency_missing",
+                format!("Missing required dependency: {name}"),
+            ),
+            Err(error) => json_failure("dotnet", appid, 1, "dotnet_failed", error.to_string()),
+        }
+    };
+    let message = match (installed, installed_now) {
+        (true, true) => ".NET Framework 4.8 installed",
+        (true, false) => ".NET Framework 4.8 is already installed",
+        _ => ".NET Framework 4.8 is not installed",
+    };
+    let result = DotnetJson {
+        schema_version: 1,
+        success: true,
+        operation: "dotnet",
+        appid,
+        name: game.name,
+        dotnet_installed: installed,
+        installed_now,
+        message: message.into(),
+    };
+    match serde_json::to_string(&result) {
+        Ok(value) => println!("{value}"),
+        Err(error) => json_failure("dotnet", appid, 1, "general_error", error.to_string()),
+    }
 }
 
 #[derive(Serialize)]

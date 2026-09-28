@@ -43,6 +43,9 @@ class UiReviewRegressionTest(unittest.TestCase):
         client = (ROOT / "ui/scripts/FlingClient.cs").read_text()
         self.assertIn('["use", appId.ToString(), choice, "--json"]', client)
         self.assertIn('["wemod", "install", appId.ToString(), "--json"]', client)
+        self.assertIn('"Check .NET for WeMod"', details)
+        self.assertIn("EnsureDotnetAsync(game, phase)", details)
+        self.assertIn('["wemod", "dotnet", appId.ToString(), "--json"]', client)
         operation = re.search(
             r"private async Task RunWemodOperationAsync\(.*?\n    }\n", source, re.DOTALL
         ).group(0)

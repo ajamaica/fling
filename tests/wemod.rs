@@ -245,3 +245,35 @@ fn running_detects_shared_install_by_wineprefix() {
     assert!(wemod::running(&config, 42));
     assert!(!wemod::running(&config, 4));
 }
+
+#[test]
+fn dotnet_48_is_detected_from_registry_or_winetricks_log() {
+    let reg = "WINE REGISTRY Version 2\n\n\
+        [Software\\\\Microsoft\\\\NET Framework Setup\\\\NDP\\\\v4\\\\Client] 1700000000\n\
+        \"Release\"=dword:00000001\n\n\
+        [Software\\\\Microsoft\\\\NET Framework Setup\\\\NDP\\\\v4\\\\Full] 1700000000\n\
+        #time=1d\n\
+        \"Install\"=dword:00000001\n\
+        \"Release\"=dword:00080ff4\n";
+    assert_eq!(wemod::dotnet_release(reg), Some(0x80ff4));
+    assert_eq!(
+        wemod::dotnet_release("[Software\\\\Wine] 1\n\"Release\"=dword:00080ff4\n"),
+        None
+    );
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prefix = temp.path();
+    assert!(!wemod::dotnet_installed(prefix));
+    // .NET 4.7.2 (461814) is too old.
+    fs::write(
+        prefix.join("system.reg"),
+        "[Software\\\\Microsoft\\\\NET Framework Setup\\\\NDP\\\\v4\\\\Full] 1\n\"Release\"=dword:00070bf6\n",
+    )
+    .expect("reg");
+    assert!(!wemod::dotnet_installed(prefix));
+    fs::write(prefix.join("system.reg"), reg).expect("reg");
+    assert!(wemod::dotnet_installed(prefix));
+    fs::remove_file(prefix.join("system.reg")).expect("rm");
+    fs::write(prefix.join("winetricks.log"), "vcrun2019\ndotnet48\n").expect("log");
+    assert!(wemod::dotnet_installed(prefix));
+}

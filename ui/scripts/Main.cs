@@ -232,6 +232,8 @@ public partial class Main : Control
         action.Disabled = busy; _root.AddChild(action);
         var wemod = Button(game.WemodInstalled ? "Update WeMod" : "Install WeMod", () => _ = InstallWemodAsync(game, phase));
         wemod.Disabled = busy; wemod.TooltipText = "Downloads WeMod once; every game shares the install and your sign-in"; _root.AddChild(wemod);
+        var dotnet = Button("Check .NET for WeMod", () => _ = EnsureDotnetAsync(game, phase));
+        dotnet.Disabled = busy; dotnet.TooltipText = "WeMod needs .NET Framework 4.8 in each game's prefix; installs it only if missing"; _root.AddChild(dotnet);
         back.CallDeferred(Control.MethodName.GrabFocus);
     }
 
@@ -289,6 +291,10 @@ public partial class Main : Control
     private Task InstallWemodAsync(SteamGame game, Label phase) => RunWemodOperationAsync(game, phase,
         "Downloading and installing WeMod… sign in when the WeMod window opens.",
         async () => (await _client.InstallWemodAsync(game.AppId)).Message);
+
+    private Task EnsureDotnetAsync(SteamGame game, Label phase) => RunWemodOperationAsync(game, phase,
+        "Checking .NET Framework 4.8… if it is missing, installing it can take 10–30 minutes.",
+        async () => (await _client.EnsureDotnetAsync(game.AppId)).Message);
 
     private async Task RunWemodOperationAsync(SteamGame game, Label phase, string progress, Func<Task<string>> operation)
     {

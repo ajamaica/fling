@@ -41,6 +41,16 @@ public sealed record WemodResponse(
     [property: JsonPropertyName("wemod_installed")] bool WemodInstalled,
     [property: JsonPropertyName("message")] string Message);
 
+public sealed record DotnetResponse(
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("success")] bool Success,
+    [property: JsonPropertyName("operation")] string Operation,
+    [property: JsonPropertyName("appid")] int AppId,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("dotnet_installed")] bool DotnetInstalled,
+    [property: JsonPropertyName("installed_now")] bool InstalledNow,
+    [property: JsonPropertyName("message")] string Message);
+
 public sealed record FlingStatus(
     [property: JsonPropertyName("schema_version")] int SchemaVersion,
     [property: JsonPropertyName("cli_installed")] bool CliInstalled,

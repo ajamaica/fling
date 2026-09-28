@@ -54,6 +54,10 @@ const string wemodJson = """{"schema_version":1,"success":true,"operation":"wemo
 var wemodResult = JsonSerializer.Deserialize<WemodResponse>(wemodJson)!;
 Assert(wemodResult.WemodInstalled && wemodResult.TrainerChoice == "wemod" && wemodResult.AppId == 20, "WeMod response contract did not deserialize");
 
+const string dotnetJson = """{"schema_version":1,"success":true,"operation":"dotnet","appid":20,"name":"Space Game","dotnet_installed":true,"installed_now":false,"message":".NET Framework 4.8 is already installed"}""";
+var dotnetResult = JsonSerializer.Deserialize<DotnetResponse>(dotnetJson)!;
+Assert(dotnetResult.DotnetInstalled && !dotnetResult.InstalledNow && dotnetResult.AppId == 20, ".NET response contract did not deserialize");
+
 var artworkRoot = Path.Combine(Path.GetTempPath(), $"fling-artwork-tests-{Guid.NewGuid():N}");
 try
 {

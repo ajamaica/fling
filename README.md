@@ -31,6 +31,7 @@ fling remove <appid> --json
 fling refresh <appid> --json
 fling use <appid> fling|wemod|both --json
 fling wemod install <appid> --json
+fling wemod dotnet <appid> [--check] --json
 ```
 
 `refresh` is intentionally local and safe: it re-reads the selected game's Steam manifest and current trainer state. It does not contact the network or modify files. JSON stdout contains JSON only; diagnostics use stderr. Exit codes are 0 success, 1 general, 2 invalid arguments, 3 missing game, 4 missing remote trainer, 5 network/download, 6 invalid file, 7 missing local trainer, 8 missing dependency, 9 unsafe path, 10 Steam configuration, 11 game-specific runtime installation failure, and 12 managed runtime removal conflict.
@@ -50,7 +51,7 @@ fling use <game> wemod        # WeMod
 fling use <game> both         # FLiNG trainer and WeMod together
 ```
 
-In the UI, open a game and use the **Start with game: FLiNG / WeMod / Both** buttons, or **Install WeMod** (**Update WeMod** once installed). Choosing WeMod or Both before WeMod is installed installs it first.
+In the UI, open a game and use the **Start with game: FLiNG / WeMod / Both** buttons, or **Install WeMod** (**Update WeMod** once installed). Choosing WeMod or Both before WeMod is installed installs it first. **Check .NET for WeMod** checks the game's prefix for .NET Framework 4.8 and installs it only if it is missing.
 
 WeMod is a Windows app with its own account. Fling installs it for you, **once**, and every game shares that install and your sign-in:
 
@@ -61,6 +62,7 @@ fling use <game> wemod           # installs WeMod automatically the first time, 
 fling use <other-game> wemod     # reuses the same install and sign-in, no download
 
 fling wemod install <appid>      # (re)install or update WeMod on demand; add --dotnet for .NET 4.8
+fling wemod dotnet <appid>       # check .NET 4.8 for that game and install it only if missing
 fling wemod setup <appid> ~/Downloads/WeMod-Setup.exe   # use an installer you downloaded yourself
 fling wemod status               # shared install and sign-in paths, and games using WeMod
 ```
@@ -75,7 +77,7 @@ How the sharing works:
 
 `setup` does not change the game's choice; pick it with `fling use`. At boot, the watcher starts whatever the game is set to inside its container as soon as the game process is ready. Game profiles such as Elden Ring's delay still apply. With `both`, a crashed trainer is retried without starting a second WeMod, and a missing FLiNG trainer or WeMod only produces a warning while the other still starts. Two trainers writing the same values can fight each other, so avoid turning on the same cheat in both. Because the sign-in is one shared profile, run WeMod for one game at a time.
 
-`fling games --json` reports `trainer_choice` (`"fling"`, `"wemod"` or `"both"`) and `wemod_enabled`; choices are stored in `~/.config/fling/wemod-appids`. If WeMod refuses to start for a game, its prefix usually needs .NET Framework 4.8: run `protontricks <appid> -q dotnet48` for that game. The single-player-only warning above applies to WeMod too.
+`fling games --json` reports `trainer_choice` (`"fling"`, `"wemod"` or `"both"`) and `wemod_enabled`; choices are stored in `~/.config/fling/wemod-appids`. WeMod needs .NET Framework 4.8, which is per game prefix (unlike WeMod itself). `fling wemod dotnet <appid>` checks the prefix (winetricks log or the `NDP\v4\Full` registry `Release`) and runs `protontricks <appid> -q dotnet48` only when it is missing; add `--check` to only check. The single-player-only warning above applies to WeMod too.
 
 ## Install Fling UI + CLI
 

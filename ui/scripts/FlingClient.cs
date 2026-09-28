@@ -13,6 +13,8 @@ public sealed class FlingClient
     public static readonly TimeSpan InstallTimeout = TimeSpan.FromMinutes(10);
     // Covers the WeMod download plus its installer, which runs under Proton.
     public static readonly TimeSpan WemodInstallTimeout = TimeSpan.FromMinutes(20);
+    // protontricks' dotnet48 install commonly takes 10–30 minutes.
+    public static readonly TimeSpan DotnetTimeout = TimeSpan.FromMinutes(45);
     public static readonly TimeSpan RemoveTimeout = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan RestartTimeout = TimeSpan.FromSeconds(60);
     private readonly AppLogger _log;
@@ -21,6 +23,7 @@ public sealed class FlingClient
     private bool _mockInstalled;
     private bool _mockWemodInstalled;
     private readonly Dictionary<int, string> _mockChoices = [];
+    private readonly HashSet<int> _mockDotnet = [];
 
     public FlingClient(AppLogger log)
     {
@@ -54,6 +57,16 @@ public sealed class FlingClient
     {
         if (_mock) { await Task.Delay(900, ct); _mockWemodInstalled = true; return MockWemod("wemod_install", appId, "WeMod installed"); }
         return await RunAsync<WemodResponse>(["wemod", "install", appId.ToString(), "--json"], WemodInstallTimeout, ct);
+    }
+    /// <summary>Checks the game's prefix for .NET Framework 4.8 and installs it only when missing.</summary>
+    public async Task<DotnetResponse> EnsureDotnetAsync(int appId, CancellationToken ct = default)
+    {
+        if (_mock)
+        {
+            await Task.Delay(900, ct); var now = _mockDotnet.Add(appId);
+            return new(1, true, "dotnet", appId, "Mock game", true, now, now ? ".NET Framework 4.8 installed" : ".NET Framework 4.8 is already installed");
+        }
+        return await RunAsync<DotnetResponse>(["wemod", "dotnet", appId.ToString(), "--json"], DotnetTimeout, ct);
     }
     public Task<CommandResponse> RefreshAsync(int appId, CancellationToken ct = default) => _mock
         ? Task.FromResult(MockCommand("refresh", appId, true))
