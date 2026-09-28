@@ -22,83 +22,90 @@ pub fn shared_dir(config: &Config) -> PathBuf {
     config.home.join(".local/share/fling/wemod")
 }
 
-/// How WeMod runs for a game that has it enabled.
+/// Which trainer(s) start with a game. All three are equal options chosen
+/// per game; games without a saved choice keep using FLiNG.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Mode {
-    /// WeMod starts and the FLiNG trainer is skipped (the default when
-    /// WeMod is selected).
-    Only,
-    /// WeMod starts together with the FLiNG trainer (when one is installed).
-    Alongside,
+pub enum Choice {
+    Fling,
+    Wemod,
+    Both,
 }
 
-impl Mode {
+impl Choice {
     pub fn as_str(self) -> &'static str {
         match self {
-            Mode::Alongside => "alongside",
-            Mode::Only => "only",
+            Choice::Fling => "fling",
+            Choice::Wemod => "wemod",
+            Choice::Both => "both",
         }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "fling" => Some(Choice::Fling),
+            "wemod" => Some(Choice::Wemod),
+            "both" => Some(Choice::Both),
+            _ => None,
+        }
+    }
+
+    pub fn uses_fling(self) -> bool {
+        self != Choice::Wemod
+    }
+
+    pub fn uses_wemod(self) -> bool {
+        self != Choice::Fling
     }
 }
 
-/// Per-game WeMod settings: one `<appid>` (WeMod over FLiNG) or
-/// `<appid> with-fling` (both) per line.
-pub fn modes(config: &Config) -> BTreeMap<u32, Mode> {
+/// Saved per-game choices: one `<appid> wemod|both` per line. FLiNG is not
+/// stored because it is what every other game uses.
+pub fn choices(config: &Config) -> BTreeMap<u32, Choice> {
     fs::read_to_string(enabled_file(config))
         .map(|text| {
             text.lines()
                 .filter_map(|line| {
                     let mut fields = line.split_whitespace();
                     let appid = fields.next()?.parse().ok()?;
-                    let mode = match fields.next() {
-                        None => Mode::Only,
-                        Some("with-fling") => Mode::Alongside,
-                        Some(_) => return None,
-                    };
-                    Some((appid, mode))
+                    let choice = Choice::parse(fields.next()?)?;
+                    choice.uses_wemod().then_some((appid, choice))
                 })
                 .collect()
         })
         .unwrap_or_default()
 }
 
+/// Games whose choice includes WeMod.
 pub fn enabled_appids(config: &Config) -> BTreeSet<u32> {
-    modes(config).into_keys().collect()
+    choices(config).into_keys().collect()
 }
 
-pub fn mode(config: &Config, appid: u32) -> Option<Mode> {
-    modes(config).get(&appid).copied()
+pub fn choice(config: &Config, appid: u32) -> Choice {
+    choices(config)
+        .get(&appid)
+        .copied()
+        .unwrap_or(Choice::Fling)
 }
 
-pub fn enabled(config: &Config, appid: u32) -> bool {
-    mode(config, appid).is_some()
-}
-
-pub fn set_enabled(config: &Config, appid: u32, enable: bool) -> Result<(), Error> {
-    set_mode(config, appid, enable.then_some(Mode::Only))
-}
-
-pub fn set_mode(config: &Config, appid: u32, mode: Option<Mode>) -> Result<(), Error> {
-    let mut modes = modes(config);
-    match mode {
-        Some(mode) => modes.insert(appid, mode),
-        None => modes.remove(&appid),
-    };
+pub fn set_choice(config: &Config, appid: u32, choice: Choice) -> Result<(), Error> {
+    let mut choices = choices(config);
+    if choice.uses_wemod() {
+        choices.insert(appid, choice);
+    } else {
+        choices.remove(&appid);
+    }
     let path = enabled_file(config);
     let parent = path
         .parent()
-        .ok_or_else(|| Error::Message("invalid WeMod configuration path".into()))?;
+        .ok_or_else(|| Error::Message("invalid trainer choice configuration path".into()))?;
     fs::create_dir_all(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     writeln!(
         temp,
-        "# Managed by Fling. Steam app IDs that launch WeMod at boot instead of FLiNG (\"with-fling\" runs both)."
+        "# Managed by Fling. Per-game trainer choice (wemod or both); other games use FLiNG."
     )?;
-    for (appid, mode) in modes {
-        match mode {
-            Mode::Only => writeln!(temp, "{appid}")?,
-            Mode::Alongside => writeln!(temp, "{appid} with-fling")?,
-        }
+    for (appid, choice) in choices {
+        writeln!(temp, "{appid} {}", choice.as_str())?;
     }
     temp.persist(&path)
         .map_err(|error| Error::Io(error.error))?;
@@ -119,12 +126,16 @@ impl Plan {
 }
 
 pub fn plan(config: &Config, appid: u32) -> Plan {
-    let mode = mode(config, appid);
+    let choice = choice(config, appid);
     Plan {
-        trainer: (mode != Some(Mode::Only))
+        trainer: choice
+            .uses_fling()
             .then(|| steam::find_trainer(config, appid))
             .flatten(),
-        wemod: mode.and_then(|_| find_exe(config, appid)),
+        wemod: choice
+            .uses_wemod()
+            .then(|| find_exe(config, appid))
+            .flatten(),
     }
 }
 
@@ -219,51 +230,54 @@ fn describe(config: &Config, appid: u32) -> String {
     }
 }
 
-pub fn enable(config: &Config, query: &str, mode: Mode) -> Result<(), Error> {
+/// `fling use <game> [fling|wemod|both]`: shows or sets the game's choice.
+pub fn choose(config: &Config, query: &str, value: Option<&str>) -> Result<(), Error> {
     let game = install::resolve(config, query)?;
-    set_mode(config, game.appid, Some(mode))?;
-    let how = match mode {
-        Mode::Alongside => "it will launch together with the FLiNG trainer",
-        Mode::Only => "it will launch instead of the FLiNG trainer",
-    };
-    println!(
-        ">>> WeMod enabled for {} (appid {}) — {how}",
-        game.name, game.appid
-    );
-    println!(">>> {}", describe(config, game.appid));
-    Ok(())
-}
-
-pub fn disable(config: &Config, query: &str) -> Result<(), Error> {
-    let game = install::resolve(config, query)?;
-    set_enabled(config, game.appid, false)?;
-    println!(
-        ">>> WeMod disabled for {} (appid {})",
-        game.name, game.appid
-    );
+    if let Some(value) = value {
+        let choice = Choice::parse(value).ok_or_else(|| {
+            Error::Message(format!(
+                "unknown choice '{value}' — use fling, wemod or both"
+            ))
+        })?;
+        set_choice(config, game.appid, choice)?;
+    }
+    let choice = choice(config, game.appid);
+    println!("{}\t{}\t{}", game.appid, game.name, choice.as_str());
+    if choice.uses_fling() && steam::find_trainer(config, game.appid).is_none() {
+        println!(
+            ">>> FLiNG trainer not installed — run: fling get {}",
+            game.appid
+        );
+    }
+    if choice.uses_wemod() && find_exe(config, game.appid).is_none() {
+        println!(
+            ">>> WeMod not installed — run: fling wemod setup {} <WeMod-Setup.exe>",
+            game.appid
+        );
+    }
     Ok(())
 }
 
 pub fn status(config: &Config) {
-    let appids = modes(config);
-    if appids.is_empty() {
+    let choices = choices(config);
+    if choices.is_empty() {
         println!("(no games use WeMod)");
         return;
     }
-    for (appid, mode) in appids {
+    for (appid, choice) in choices {
         let name = steam::game(config, appid)
             .map(|game| game.name)
             .unwrap_or_else(|| "(not installed)".into());
         println!(
             "{appid}\t{name}\t{}\t{}",
-            mode.as_str(),
+            choice.as_str(),
             describe(config, appid)
         );
     }
 }
 
-/// Runs the user-supplied WeMod installer inside the game's Proton prefix and
-/// enables WeMod for that game.
+/// Runs the user-supplied WeMod installer inside the game's Proton prefix.
+/// It does not change which trainer the game uses; see `choose`.
 pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Result<(), Error> {
     let game = install::resolve(config, query)?;
     let meta = fs::metadata(installer).map_err(|_| {
@@ -301,9 +315,7 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
         ">>> Running the WeMod installer in the Proton prefix of {}...",
         game.name
     );
-    println!(
-        ">>> Sign in when WeMod opens, then close it. Fling starts it with the game from now on."
-    );
+    println!(">>> Sign in when WeMod opens, then close it.");
     let status = Command::new("protontricks-launch")
         .args(["--appid", appid.as_str()])
         .arg(installer)
@@ -312,13 +324,15 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
     if !status.success() {
         return Err(Error::Message("WeMod installer failed".into()));
     }
-    if !enabled(config, game.appid) {
-        set_mode(config, game.appid, Some(Mode::Only))?;
-    }
     println!(
-        ">>> WeMod enabled for {} — {}",
+        ">>> WeMod for {}: {}",
         game.name,
         describe(config, game.appid)
+    );
+    println!(
+        ">>> Choose what starts with the game: fling use {} fling|wemod|both (now: {})",
+        game.appid,
+        choice(config, game.appid).as_str()
     );
     Ok(())
 }

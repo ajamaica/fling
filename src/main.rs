@@ -27,12 +27,12 @@ fn run() -> Result<(), Error> {
 "setup"|"inject-properties"=>{let query=(args.len()>2).then(||args[2..].join(" "));commands::setup(&c,query.as_deref())?},"restart-steam"=>commands::restart()?,"_steamroot"=>println!("{}",c.steam_root.display()),"_lo-edit" if need(&args,5)=>std::process::exit(commands::lo_edit(&args[2],&args[3],&args[4])?),
 "_game-ready" if need(&args,3)=>std::process::exit(process::game_ready(&c,args[2].parse().unwrap_or(0))),"_watch-run" if need(&args,3)=>std::process::exit(watcher::retry(args[2].parse().unwrap_or(0))),"_install-reframework" if need(&args,3)=>runtime::install(&c,args[2].parse().unwrap_or(0))?,"watch"=>watcher::watch(&c)?,
 "wemod" if args.get(2).map(String::as_str)==Some("status")&&need(&args,3)=>wemod::status(&c),
-"wemod" if args.get(2).map(String::as_str)==Some("enable")&&args.len()>=4&&args.last().map(String::as_str)!=Some("--with-fling")=>wemod::enable(&c,&args[3..].join(" "),wemod::Mode::Only)?,
-"wemod" if args.get(2).map(String::as_str)==Some("enable")&&args.len()>=5=>wemod::enable(&c,&args[3..args.len()-1].join(" "),wemod::Mode::Alongside)?,
-"wemod" if args.get(2).map(String::as_str)==Some("disable")&&args.len()>=4=>wemod::disable(&c,&args[3..].join(" "))?,
 "wemod" if args.get(2).map(String::as_str)==Some("setup")&&(need(&args,5)||(need(&args,6)&&args[5]=="--dotnet"))=>wemod::setup(&c,&args[3],std::path::Path::new(&args[4]),args.len()==6)?,
-"wemod"=>{eprintln!("usage: fling wemod status|enable <game> [--with-fling]|disable <game>|setup <appid> <WeMod-Setup.exe> [--dotnet]");std::process::exit(2)},
-_=>return Err(Error::Message("usage: fling games|status|install|remove|refresh|list|get|auto|run|setup|restart-steam|installed|watch|wemod".into()))}
+"wemod"=>{eprintln!("usage: fling wemod status|setup <appid> <WeMod-Setup.exe> [--dotnet]");std::process::exit(2)},
+"use" if args.len()>=4&&wemod::Choice::parse(&args[args.len()-1]).is_some()=>wemod::choose(&c,&args[2..args.len()-1].join(" "),Some(&args[args.len()-1]))?,
+"use" if args.len()>=3=>wemod::choose(&c,&args[2..].join(" "),None)?,
+"use"=>{eprintln!("usage: fling use <game> [fling|wemod|both]");std::process::exit(2)},
+_=>return Err(Error::Message("usage: fling games|status|install|remove|refresh|list|get|auto|run|setup|restart-steam|installed|watch|use|wemod".into()))}
     Ok(())
 }
 fn main() -> ExitCode {

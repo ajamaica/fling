@@ -798,7 +798,7 @@ esac
         setup = self.invoke("setup", "30")
         self.assertNotIn("no trainer downloaded", setup.stdout)
 
-    def test_selected_wemod_opens_over_fling_unless_both_requested(self):
+    def test_each_game_chooses_fling_wemod_or_both(self):
         trainer = self.home / "Trainers/20 - Space Game/Trainer.exe"
         trainer.parent.mkdir(parents=True); trainer.write_bytes(b"MZ")
         prefix = self.lib2 / "steamapps/compatdata/20/pfx"
@@ -823,24 +823,36 @@ esac
 
         self.assertEqual([str(trainer)], launched([trainer]))
 
-        self.invoke("wemod", "enable", "20", check=True)
+        self.assertIn("20\tSpace Game\tfling", self.invoke("use", "20", check=True).stdout)
+        self.invoke("use", "20", "wemod", check=True)
         games = {g["appid"]: g for g in self.payload(self.invoke("games", "--json", check=True))["games"]}
-        self.assertTrue(games[20]["wemod_enabled"]); self.assertEqual("only", games[20]["wemod_mode"])
-        self.assertFalse(games[10]["wemod_enabled"]); self.assertIsNone(games[10]["wemod_mode"])
-        self.assertIn("20\tSpace Game\tonly\tready", self.invoke("wemod", "status", check=True).stdout)
+        self.assertTrue(games[20]["wemod_enabled"]); self.assertEqual("wemod", games[20]["trainer_choice"])
+        self.assertFalse(games[10]["wemod_enabled"]); self.assertEqual("fling", games[10]["trainer_choice"])
+        self.assertIn("20\tSpace Game\twemod\tready", self.invoke("wemod", "status", check=True).stdout)
         self.assertEqual([str(wemod)], launched([wemod]))
 
-        self.invoke("wemod", "enable", "20", "--with-fling", check=True)
-        self.assertIn("\talongside\t", self.invoke("wemod", "status", check=True).stdout)
+        self.invoke("use", "Space Game", "both", check=True)
+        self.assertIn("\tboth\t", self.invoke("wemod", "status", check=True).stdout)
         self.assertEqual(sorted([str(trainer), str(wemod)]), launched([trainer, wemod]))
 
-        self.invoke("wemod", "disable", "20", check=True)
+        self.invoke("use", "20", "fling", check=True)
         self.assertEqual([str(trainer)], launched([trainer]))
+        self.assertEqual(2, self.invoke("use").returncode)
+
+    def test_wemod_setup_installs_without_changing_the_choice(self):
+        (self.lib2 / "steamapps/compatdata/20/pfx").mkdir(parents=True)
+        installer = self.tmp / "WeMod-Setup.exe"; installer.write_bytes(b"MZ")
+        launch_log = self.tmp / "launch.log"
+        self.command("protontricks-launch", f'printf "%s\\n" "$@" > "{launch_log}"\n')
+        setup = self.invoke("wemod", "setup", "20", str(installer), check=True)
+        self.assertEqual(["--appid", "20", str(installer)], launch_log.read_text().splitlines())
+        self.assertIn("fling use 20 fling|wemod|both (now: fling)", setup.stdout)
+        self.assertIn("\tfling", self.invoke("use", "20", check=True).stdout)
 
     def test_wemod_enabled_without_install_reports_setup_command(self):
         (self.steam / "steamapps/compatdata/10/pfx").mkdir(parents=True)
         self.env["FLING_PROC_ROOT"] = str(self.tmp)
-        self.invoke("wemod", "enable", "10", check=True)
+        self.invoke("use", "10", "wemod", check=True)
         run = self.invoke("run", "10")
         self.assertNotEqual(0, run.returncode)
         self.assertIn("fling wemod setup 10", run.stderr)

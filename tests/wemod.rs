@@ -1,6 +1,6 @@
 use fling_cli::{
     config::Config,
-    wemod::{self, Mode},
+    wemod::{self, Choice},
 };
 use std::{fs, path::Path};
 
@@ -32,21 +32,22 @@ fn app(root: &Path, version: &str) {
 }
 
 #[test]
-fn enabled_appids_persist_and_toggle() {
+fn per_game_choices_persist_and_default_to_fling() {
     let (_temp, config) = fixture();
-    assert!(!wemod::enabled(&config, 42));
-    wemod::set_enabled(&config, 42, true).expect("enable");
-    assert_eq!(wemod::mode(&config, 42), Some(Mode::Only));
-    wemod::set_enabled(&config, 7, true).expect("enable");
+    assert_eq!(wemod::choice(&config, 42), Choice::Fling);
+    wemod::set_choice(&config, 42, Choice::Wemod).expect("wemod");
+    wemod::set_choice(&config, 7, Choice::Both).expect("both");
+    assert_eq!(wemod::choice(&config, 42), Choice::Wemod);
+    assert_eq!(wemod::choice(&config, 7), Choice::Both);
     assert_eq!(
         wemod::enabled_appids(&config)
             .into_iter()
             .collect::<Vec<_>>(),
         [7, 42]
     );
-    wemod::set_enabled(&config, 42, false).expect("disable");
-    assert!(!wemod::enabled(&config, 42));
-    assert!(wemod::enabled(&config, 7));
+    wemod::set_choice(&config, 42, Choice::Fling).expect("fling");
+    assert_eq!(wemod::choice(&config, 42), Choice::Fling);
+    assert_eq!(wemod::choice(&config, 7), Choice::Both);
 }
 
 #[test]
@@ -72,7 +73,7 @@ fn prefers_newest_app_in_game_prefix_over_shared_copy() {
 }
 
 #[test]
-fn plan_runs_wemod_alongside_or_instead_of_the_trainer_per_game() {
+fn plan_starts_the_chosen_trainers() {
     let (_temp, config) = fixture();
     let trainer = config.trainers.join("42 - Answer/Trainer.exe");
     fs::create_dir_all(trainer.parent().expect("parent")).expect("trainer dir");
@@ -83,15 +84,14 @@ fn plan_runs_wemod_alongside_or_instead_of_the_trainer_per_game() {
     let plan = wemod::plan(&config, 42);
     assert_eq!((plan.trainer.as_ref(), plan.wemod), (Some(&trainer), None));
 
-    wemod::set_mode(&config, 42, Some(Mode::Alongside)).expect("alongside");
+    wemod::set_choice(&config, 42, Choice::Both).expect("both");
     let plan = wemod::plan(&config, 42);
     assert_eq!(
         (plan.trainer.as_ref(), plan.wemod.as_ref()),
         (Some(&trainer), Some(&exe))
     );
 
-    wemod::set_mode(&config, 42, Some(Mode::Only)).expect("only");
-    assert_eq!(wemod::mode(&config, 42), Some(Mode::Only));
+    wemod::set_choice(&config, 42, Choice::Wemod).expect("wemod");
     let plan = wemod::plan(&config, 42);
     assert_eq!((plan.trainer, plan.wemod.as_ref()), (None, Some(&exe)));
 
