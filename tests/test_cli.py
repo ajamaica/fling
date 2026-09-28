@@ -798,7 +798,7 @@ esac
         setup = self.invoke("setup", "30")
         self.assertNotIn("no trainer downloaded", setup.stdout)
 
-    def test_wemod_runs_alongside_or_instead_of_trainer_per_game(self):
+    def test_selected_wemod_opens_over_fling_unless_both_requested(self):
         trainer = self.home / "Trainers/20 - Space Game/Trainer.exe"
         trainer.parent.mkdir(parents=True); trainer.write_bytes(b"MZ")
         prefix = self.lib2 / "steamapps/compatdata/20/pfx"
@@ -825,14 +825,14 @@ esac
 
         self.invoke("wemod", "enable", "20", check=True)
         games = {g["appid"]: g for g in self.payload(self.invoke("games", "--json", check=True))["games"]}
-        self.assertTrue(games[20]["wemod_enabled"]); self.assertEqual("alongside", games[20]["wemod_mode"])
+        self.assertTrue(games[20]["wemod_enabled"]); self.assertEqual("only", games[20]["wemod_mode"])
         self.assertFalse(games[10]["wemod_enabled"]); self.assertIsNone(games[10]["wemod_mode"])
-        self.assertIn("20\tSpace Game\talongside\tready", self.invoke("wemod", "status", check=True).stdout)
-        self.assertEqual(sorted([str(trainer), str(wemod)]), launched([trainer, wemod]))
-
-        self.invoke("wemod", "enable", "20", "--only", check=True)
-        self.assertIn("\tonly\t", self.invoke("wemod", "status", check=True).stdout)
+        self.assertIn("20\tSpace Game\tonly\tready", self.invoke("wemod", "status", check=True).stdout)
         self.assertEqual([str(wemod)], launched([wemod]))
+
+        self.invoke("wemod", "enable", "20", "--with-fling", check=True)
+        self.assertIn("\talongside\t", self.invoke("wemod", "status", check=True).stdout)
+        self.assertEqual(sorted([str(trainer), str(wemod)]), launched([trainer, wemod]))
 
         self.invoke("wemod", "disable", "20", check=True)
         self.assertEqual([str(trainer)], launched([trainer]))

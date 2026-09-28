@@ -39,20 +39,20 @@ PRAGMATA (Steam app 3357650) requires REFramework for the FLiNG trainer's anti-c
 
 ## WeMod (optional)
 
-Fling can start [WeMod](https://www.wemod.com/) at boot, per game, either **alongside** the FLiNG trainer or **instead of** it. WeMod is a Windows app with its own account, and Fling never downloads it. It must be installed in the game's Proton prefix so it shares the game's Wine server:
+Fling can start [WeMod](https://www.wemod.com/) at boot, per game. When you select WeMod for a game, WeMod always opens **instead of** the FLiNG trainer, unless you ask for both. WeMod is a Windows app with its own account, and Fling never downloads it. It must be installed in the game's Proton prefix so it shares the game's Wine server:
 
 ```bash
 # Launch the game once so its Proton prefix exists, then close it.
 fling wemod setup <appid> ~/Downloads/WeMod-Setup.exe   # add --dotnet to also run: protontricks <appid> -q dotnet48
-fling wemod enable <appid>          # WeMod + FLiNG trainer together (setup already does this)
-fling wemod enable <appid> --only   # WeMod only; the FLiNG trainer is skipped for this game
-fling wemod disable <appid>         # FLiNG trainer only
+fling wemod enable <appid>                # WeMod opens instead of FLiNG (setup already does this)
+fling wemod enable <appid> --with-fling   # WeMod and the FLiNG trainer together
+fling wemod disable <appid>               # FLiNG trainer only
 fling wemod status                  # enabled games, their mode, and the WeMod.exe each will use
 ```
 
-`setup` runs the installer in the game's prefix with `protontricks-launch`. Sign in when WeMod opens, then close it. After that, the watcher starts everything enabled for the game inside its container as soon as the game process is ready. Game profiles such as Elden Ring's delay still apply. In alongside mode, a crashed trainer is retried without starting a second WeMod. Games you never enable keep the plain FLiNG behavior. Two trainers writing the same values can fight each other, so avoid turning on the same cheat in both.
+`setup` runs the installer in the game's prefix with `protontricks-launch`. Sign in when WeMod opens, then close it. After that, the watcher starts everything enabled for the game inside its container as soon as the game process is ready. Game profiles such as Elden Ring's delay still apply. With `--with-fling`, a crashed trainer is retried without starting a second WeMod. Games you never enable keep the plain FLiNG behavior. Two trainers writing the same values can fight each other, so avoid turning on the same cheat in both.
 
-Fling uses the newest `drive_c/users/steamuser/AppData/Local/WeMod/app-*/WeMod.exe` in the game's prefix. If that is missing, it falls back to an unpacked `app-*` folder copied to `~/.local/share/fling/wemod/`. Settings are stored in `~/.config/fling/wemod-appids`, and `fling games --json` reports `wemod_enabled` and `wemod_mode` (`"alongside"`, `"only"` or `null`). If WeMod refuses to start, the prefix usually needs .NET Framework 4.8 (`--dotnet`). The single-player-only warning above applies to WeMod too.
+Fling uses the newest `drive_c/users/steamuser/AppData/Local/WeMod/app-*/WeMod.exe` in the game's prefix. If that is missing, it falls back to an unpacked `app-*` folder copied to `~/.local/share/fling/wemod/`. Settings are stored in `~/.config/fling/wemod-appids`, and `fling games --json` reports `wemod_enabled` and `wemod_mode` (`"only"`, `"alongside"` or `null`). If WeMod refuses to start, the prefix usually needs .NET Framework 4.8 (`--dotnet`). The single-player-only warning above applies to WeMod too.
 
 ## Install Fling UI + CLI
 

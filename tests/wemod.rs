@@ -36,6 +36,7 @@ fn enabled_appids_persist_and_toggle() {
     let (_temp, config) = fixture();
     assert!(!wemod::enabled(&config, 42));
     wemod::set_enabled(&config, 42, true).expect("enable");
+    assert_eq!(wemod::mode(&config, 42), Some(Mode::Only));
     wemod::set_enabled(&config, 7, true).expect("enable");
     assert_eq!(
         wemod::enabled_appids(&config)

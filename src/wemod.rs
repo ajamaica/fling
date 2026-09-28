@@ -25,10 +25,11 @@ pub fn shared_dir(config: &Config) -> PathBuf {
 /// How WeMod runs for a game that has it enabled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
+    /// WeMod starts and the FLiNG trainer is skipped (the default when
+    /// WeMod is selected).
+    Only,
     /// WeMod starts together with the FLiNG trainer (when one is installed).
     Alongside,
-    /// WeMod starts and the FLiNG trainer is skipped.
-    Only,
 }
 
 impl Mode {
@@ -40,7 +41,8 @@ impl Mode {
     }
 }
 
-/// Per-game WeMod settings: one `<appid>` or `<appid> only` per line.
+/// Per-game WeMod settings: one `<appid>` (WeMod over FLiNG) or
+/// `<appid> with-fling` (both) per line.
 pub fn modes(config: &Config) -> BTreeMap<u32, Mode> {
     fs::read_to_string(enabled_file(config))
         .map(|text| {
@@ -49,8 +51,8 @@ pub fn modes(config: &Config) -> BTreeMap<u32, Mode> {
                     let mut fields = line.split_whitespace();
                     let appid = fields.next()?.parse().ok()?;
                     let mode = match fields.next() {
-                        None => Mode::Alongside,
-                        Some("only") => Mode::Only,
+                        None => Mode::Only,
+                        Some("with-fling") => Mode::Alongside,
                         Some(_) => return None,
                     };
                     Some((appid, mode))
@@ -73,7 +75,7 @@ pub fn enabled(config: &Config, appid: u32) -> bool {
 }
 
 pub fn set_enabled(config: &Config, appid: u32, enable: bool) -> Result<(), Error> {
-    set_mode(config, appid, enable.then_some(Mode::Alongside))
+    set_mode(config, appid, enable.then_some(Mode::Only))
 }
 
 pub fn set_mode(config: &Config, appid: u32, mode: Option<Mode>) -> Result<(), Error> {
@@ -90,12 +92,12 @@ pub fn set_mode(config: &Config, appid: u32, mode: Option<Mode>) -> Result<(), E
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     writeln!(
         temp,
-        "# Managed by Fling. Steam app IDs that launch WeMod at boot (\"only\" skips the FLiNG trainer)."
+        "# Managed by Fling. Steam app IDs that launch WeMod at boot instead of FLiNG (\"with-fling\" runs both)."
     )?;
     for (appid, mode) in modes {
         match mode {
-            Mode::Alongside => writeln!(temp, "{appid}")?,
-            Mode::Only => writeln!(temp, "{appid} only")?,
+            Mode::Only => writeln!(temp, "{appid}")?,
+            Mode::Alongside => writeln!(temp, "{appid} with-fling")?,
         }
     }
     temp.persist(&path)
@@ -311,7 +313,7 @@ pub fn setup(config: &Config, query: &str, installer: &Path, dotnet: bool) -> Re
         return Err(Error::Message("WeMod installer failed".into()));
     }
     if !enabled(config, game.appid) {
-        set_mode(config, game.appid, Some(Mode::Alongside))?;
+        set_mode(config, game.appid, Some(Mode::Only))?;
     }
     println!(
         ">>> WeMod enabled for {} — {}",
