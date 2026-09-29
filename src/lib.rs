@@ -10,3 +10,4 @@ pub mod process;
 pub mod runtime;
 pub mod steam;
 pub mod watcher;
+pub mod wine_mono;

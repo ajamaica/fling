@@ -817,8 +817,9 @@ pub fn remove_json(config: &Config, arg: &str) {
 }
 pub fn legacy_get(config: &Config, arg: &str) -> Result<(), Error> {
     let appid = resolve(config, arg)?.appid;
-    install_inner(config, appid)?;
+    let (game, _) = install_inner(config, appid)?;
     println!(">>> Trainer installed successfully");
+    crate::wine_mono::ensure_and_report(config, &game);
     Ok(())
 }
 pub fn resolve(config: &Config, q: &str) -> Result<steam::Game, Error> {
