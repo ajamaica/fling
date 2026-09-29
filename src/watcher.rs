@@ -288,6 +288,7 @@ fn shortcut_gameid(config: &Config, appid: u32) -> Option<u64> {
 fn trainer_running(appid: u32) -> bool {
     Command::new("pgrep")
         .args(["-f", &format!("Trainers/{appid} - .*Trainer\\.exe")])
+        .stdout(std::process::Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
 }

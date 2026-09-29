@@ -130,6 +130,7 @@ Focus is always visible. Navigation remains enabled while one global trainer mod
 - **Environment inactive:** close games, then use Settings to restart Steam, or reboot.
 - **Details needed:** logs are at Godot's `user://logs/fling-ui.log` and rotate at roughly 512 KiB. Environment secrets and raw command output are not logged.
 - **Trainer cannot attach:** confirm the watcher and Steam environment are active, and remember trainers support Proton games, not native Linux executables.
+- **Trainer closes ~10s after launch on Proton 11.0:** Proton 11.0 ships Wine Mono 11.2.0, which cannot open FLiNG's .NET window. `fling run` (and so the watcher) installs the checksum-pinned Wine Mono 11.3.0 into that game's prefix at `C:\windows\mono\mono-2.0` before launching, and removes it again once the game's Proton ships a working runtime. The download is cached in `~/.cache/fling`.
 - **PRAGMATA runtime-support error:** Fling could not safely install REFramework. Check network access and the game directory. If `dinput8.dll` already belongs to another mod setup, Fling deliberately leaves it untouched.
 
 ## Test

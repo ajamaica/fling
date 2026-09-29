@@ -168,6 +168,7 @@ pub fn run(config: &Config, q: &str) -> Result<(), Error> {
         ">>> Launching trainer for {} (appid {}) in its Proton prefix...",
         g.name, g.appid
     );
+    crate::wine_mono::ensure_and_report(config, &g);
     let session = if env::var_os("DISPLAY").is_none() && env::var_os("WAYLAND_DISPLAY").is_none() {
         crate::watcher::steam_session_environment(config)
     } else {
