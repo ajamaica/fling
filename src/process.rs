@@ -86,6 +86,9 @@ pub fn game_ready(config: &Config, appid: u32) -> i32 {
         if helper_dirs.iter().any(|marker| normalized.contains(marker))
             || helper_names.contains(&name)
             || name.starts_with("unins")
+            // Launcher bootstrappers that Steam's install script runs from
+            // the game folder, e.g. UbisoftConnectInstaller.exe.
+            || name.contains("installer")
             || name.starts_with("vc_redist")
             || name.starts_with("easyanticheat")
         {
