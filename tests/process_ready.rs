@@ -91,6 +91,7 @@ fn readiness_is_scoped_to_real_game_argv0_and_rejects_helpers() {
         "unins000.exe",
         "vc_redist.x64.exe",
         "easyanticheat_launcher.exe",
+        "UbisoftConnectInstaller.exe",
     ];
     for (offset, helper) in helper_names.iter().enumerate() {
         process(
