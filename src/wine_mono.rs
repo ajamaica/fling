@@ -188,16 +188,47 @@ fn cached_archive(config: &Config) -> Result<PathBuf, Error> {
     Ok(archive)
 }
 
-/// Accepts only regular files and directories under the release's top
-/// directory, as `tar -tvJf` lists them.
+/// Accepts regular files, directories and relative symlinks that stay under
+/// the release's top directory, as `tar -tvJf` lists them.
 pub fn listing_is_safe(verbose_listing: &str) -> bool {
     verbose_listing.lines().all(|line| {
         let kind = line.chars().next();
-        let path = line.split_whitespace().nth(5).unwrap_or_default();
-        matches!(kind, Some('-' | 'd'))
-            && (path == format!("{TOP_DIR}/") || path.starts_with(&format!("{TOP_DIR}/")))
-            && !path.split('/').any(|part| part == "..")
+        let Some(entry) = line.split_whitespace().nth(5) else {
+            return false;
+        };
+        let entry = &line[line.find(entry).unwrap_or(0)..];
+        match kind {
+            Some('-' | 'd') => stays_inside(&[], entry),
+            Some('l') => {
+                let Some((link, target)) = entry.split_once(" -> ") else {
+                    return false;
+                };
+                let mut parent: Vec<&str> =
+                    link.split('/').filter(|part| !part.is_empty()).collect();
+                parent.pop();
+                stays_inside(&[], link) && !target.starts_with('/') && stays_inside(&parent, target)
+            }
+            _ => false,
+        }
     })
+}
+
+/// True when `path`, resolved from `base`, stays under the top directory.
+fn stays_inside(base: &[&str], path: &str) -> bool {
+    let mut parts: Vec<&str> = base.to_vec();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+                if parts.is_empty() {
+                    return false;
+                }
+            }
+            part => parts.push(part),
+        }
+    }
+    parts.first() == Some(&TOP_DIR)
 }
 
 fn install(archive: &Path, runtime: &Path) -> Result<(), Error> {
@@ -226,8 +257,11 @@ fn install(archive: &Path, runtime: &Path) -> Result<(), Error> {
         }
         let extracted = staging.join(TOP_DIR);
         fs::write(extracted.join(MARKER), format!("{VERSION}\n"))?;
-        fs::rename(&extracted, runtime)?;
-        Ok(())
+        match fs::rename(&extracted, runtime) {
+            // Another fling run (the watcher, say) installed it first.
+            Err(_) if is_managed(runtime) => Ok(()),
+            result => Ok(result?),
+        }
     })();
     let _ = fs::remove_dir_all(&staging);
     result

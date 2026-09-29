@@ -125,8 +125,17 @@ fn archive_listing_rejects_links_and_escapes() {
     let ok = "drwxr-xr-x u/g 0 2026-08-17 18:00 wine-mono-11.3.0/\n\
               -rw-r--r-- u/g 9 2026-08-17 18:00 wine-mono-11.3.0/lib/mono/4.5/mscorlib.dll\n";
     assert!(wine_mono::listing_is_safe(ok));
+    assert!(wine_mono::listing_is_safe(
+        "lrwxrwxrwx u/g 0 2026-08-17 18:00 wine-mono-11.3.0/lib/mono/4.5/A.dll -> ../gac/A/4.0.0.0__b77a/A.dll\n"
+    ));
     assert!(!wine_mono::listing_is_safe(
         "lrwxrwxrwx u/g 0 2026-08-17 18:00 wine-mono-11.3.0/x -> /etc/passwd\n"
+    ));
+    assert!(!wine_mono::listing_is_safe(
+        "lrwxrwxrwx u/g 0 2026-08-17 18:00 wine-mono-11.3.0/lib/x -> ../../../escape\n"
+    ));
+    assert!(!wine_mono::listing_is_safe(
+        "hrw-r--r-- u/g 0 2026-08-17 18:00 wine-mono-11.3.0/x link to /etc/passwd\n"
     ));
     assert!(!wine_mono::listing_is_safe(
         "-rw-r--r-- u/g 9 2026-08-17 18:00 wine-mono-11.3.0/../../evil\n"
